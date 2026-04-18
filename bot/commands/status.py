@@ -80,7 +80,13 @@ class StatusCommand(BotCommand):
         
         # 通知渠道状态
         status["notify_wechat"] = bool(config.wechat_webhook_url)
-        status["notify_feishu"] = bool(config.feishu_webhook_url)
+        status["notify_feishu_webhook"] = bool(config.feishu_webhook_url)
+        status["notify_feishu_stream"] = (
+            config.feishu_stream_enabled
+            and bool(config.feishu_app_id)
+            and bool(config.feishu_app_secret)
+            and bool(getattr(config, 'feishu_user_open_id', None))
+        )
         status["notify_telegram"] = bool(config.telegram_bot_token and config.telegram_chat_id)
         status["notify_email"] = bool(config.email_sender and config.email_password)
         
@@ -127,7 +133,8 @@ class StatusCommand(BotCommand):
             "",
             "**📢 通知渠道**",
             f"• 企业微信: {icon(status['notify_wechat'])}",
-            f"• 飞书: {icon(status['notify_feishu'])}",
+            f"• 飞书 Webhook: {icon(status['notify_feishu_webhook'])}",
+            f"• 飞书 Stream: {icon(status['notify_feishu_stream'])}",
             f"• Telegram: {icon(status['notify_telegram'])}",
             f"• 邮件: {icon(status['notify_email'])}",
         ])
