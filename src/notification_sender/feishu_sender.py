@@ -4,13 +4,14 @@
 
 职责：
 1. 通过 webhook 发送飞书消息
+2. 通过 App ID + App Secret + Open ID 发送飞书消息（Stream 模式主动推送）
 """
 import base64
 import hashlib
 import hmac
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class FeishuSender:
-    
+
     def __init__(self, config: Config):
         """
         初始化飞书配置
@@ -40,6 +41,10 @@ class FeishuSender:
         self._feishu_keyword = (getattr(config, 'feishu_webhook_keyword', None) or '').strip()
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
+        # Stream 模式配置（App ID + Secret + Open ID）
+        self._feishu_app_id = getattr(config, 'feishu_app_id', None)
+        self._feishu_app_secret = getattr(config, 'feishu_app_secret', None)
+        self._feishu_user_open_id = getattr(config, 'feishu_user_open_id', None)
 
     def _get_keyword_prefix(self) -> str:
         """Return the keyword prefix required by Feishu webhook security settings."""
@@ -71,48 +76,50 @@ class FeishuSender:
             "timestamp": timestamp,
             "sign": sign,
         }
-    
-          
+
     def send_to_feishu(self, content: str) -> bool:
         """
         推送消息到飞书机器人
-        
-        飞书自定义机器人 Webhook 消息格式：
-        {
-            "msg_type": "text",
-            "content": {
-                "text": "文本内容"
-            }
-        }
-        
-        说明：飞书文本消息不会渲染 Markdown，需使用交互卡片（lark_md）格式
-        
+
+        支持两种模式（按优先级）：
+        1. Webhook 模式：feishu_webhook_url
+        2. Stream 模式（主动推送）：feishu_app_id + feishu_app_secret + feishu_user_open_id
+
         注意：飞书文本消息限制约 20KB，超长内容会自动分批发送
         可通过环境变量 FEISHU_MAX_BYTES 调整限制值
-        
+
         Args:
             content: 消息内容（Markdown 会转为纯文本）
-            
+
         Returns:
             是否发送成功
         """
-        if not self._feishu_url:
-            logger.warning("飞书 Webhook 未配置，跳过推送")
-            return False
-        
         # 飞书 lark_md 支持有限，先做格式转换
         formatted_content = format_feishu_markdown(content)
+        max_bytes = self._feishu_max_bytes
 
-        max_bytes = self._feishu_max_bytes  # 从配置读取，默认 20000 字节
+        # 优先使用 Webhook 模式
+        if self._feishu_url:
+            return self._send_via_webhook(formatted_content, max_bytes)
+
+        # 回退使用 Stream 模式（App ID + Secret + Open ID）
+        if self._feishu_app_id and self._feishu_app_secret and self._feishu_user_open_id:
+            return self._send_via_open_id(formatted_content, max_bytes)
+
+        logger.warning("飞书未配置（Webhook 和 Stream 模式均未配置），跳过推送")
+        return False
+
+    def _send_via_webhook(self, content: str, max_bytes: int) -> bool:
+        """通过 Webhook 发送飞书消息"""
         keyword_overhead = len(self._get_keyword_prefix().encode('utf-8'))
         effective_max_bytes = max_bytes - keyword_overhead
 
         if effective_max_bytes <= 0:
             logger.error("飞书关键词过长，超过单条消息允许的最大字节数，无法发送")
             return False
-        
+
         # 检查字节长度，超长则分批发送
-        content_bytes = len(formatted_content.encode('utf-8')) + keyword_overhead
+        content_bytes = len(content.encode('utf-8')) + keyword_overhead
         if content_bytes > max_bytes:
             min_chunk_bytes = MIN_MAX_BYTES + PAGE_MARKER_SAFE_BYTES
             if effective_max_bytes < min_chunk_bytes:
@@ -122,57 +129,44 @@ class FeishuSender:
                     min_chunk_bytes,
                 )
                 return False
-            logger.info(f"飞书消息内容超长({content_bytes}字节/{len(content)}字符)，将分批发送")
-            return self._send_feishu_chunked(formatted_content, effective_max_bytes)
-        
+            logger.info(f"飞书消息内容超长({content_bytes}字节)，将分批发送")
+            return self._send_webhook_chunked(content, effective_max_bytes)
+
         try:
-            return self._send_feishu_message(formatted_content)
+            return self._send_webhook_message(content)
         except Exception as e:
             logger.error(f"发送飞书消息失败: {e}")
             return False
-   
-    def _send_feishu_chunked(self, content: str, max_bytes: int) -> bool:
-        """
-        分批发送长消息到飞书
-        
-        按股票分析块（以 --- 或 ### 分隔）智能分割，确保每批不超过限制
-        
-        Args:
-            content: 完整消息内容
-            max_bytes: 单条消息最大字节数
-            
-        Returns:
-            是否全部发送成功
-        """
+
+    def _send_webhook_chunked(self, content: str, max_bytes: int) -> bool:
+        """通过 Webhook 分批发送长消息"""
         try:
             chunks = chunk_content_by_max_bytes(content, max_bytes, add_page_marker=True)
         except ValueError as e:
-            logger.error("飞书消息分片失败，单片预算不足以安全分页（关键词过长或 max_bytes 过小）: %s", e)
+            logger.error("飞书消息分片失败: %s", e)
             return False
-        
-        # 分批发送
+
         total_chunks = len(chunks)
         success_count = 0
-        
-        logger.info(f"飞书分批发送：共 {total_chunks} 批")
-        
+
+        logger.info(f"飞书（Webhook）分批发送：共 {total_chunks} 批")
+
         for i, chunk in enumerate(chunks):
             try:
-                if self._send_feishu_message(chunk):
+                if self._send_webhook_message(chunk):
                     success_count += 1
                     logger.info(f"飞书第 {i+1}/{total_chunks} 批发送成功")
                 else:
                     logger.error(f"飞书第 {i+1}/{total_chunks} 批发送失败")
             except Exception as e:
                 logger.error(f"飞书第 {i+1}/{total_chunks} 批发送异常: {e}")
-            
-            # 批次间隔，避免触发频率限制
+
             if i < total_chunks - 1:
                 time.sleep(1)
-        
+
         return success_count == total_chunks
-    
-    def _send_feishu_message(self, content: str) -> bool:
+
+    def _send_webhook_message(self, content: str) -> bool:
         """发送单条飞书消息（优先使用 Markdown 卡片）"""
         prepared_content = self._apply_keyword_prefix(content)
         security_fields = self._build_security_fields()
@@ -245,3 +239,64 @@ class FeishuSender:
         }
 
         return _post_payload(text_payload)
+
+    def _send_via_open_id(self, content: str, max_bytes: int) -> bool:
+        """通过 App ID + Secret + Open ID 发送飞书消息（Stream 模式主动推送）"""
+        try:
+            from bot.platforms.feishu_stream import FeishuReplyClient, FEISHU_SDK_AVAILABLE
+
+            if not FEISHU_SDK_AVAILABLE:
+                logger.error("lark-oapi SDK 未安装，无法使用 Stream 模式发送")
+                return False
+
+            client = FeishuReplyClient(self._feishu_app_id, self._feishu_app_secret)
+
+            content_bytes = len(content.encode('utf-8'))
+            if content_bytes > max_bytes:
+                logger.info(f"飞书消息内容超长({content_bytes}字节)，将分批发送")
+                return self._send_open_id_chunked(client, content, max_bytes)
+
+            return client.send_to_chat(
+                chat_id=self._feishu_user_open_id,
+                text=content,
+                receive_id_type="open_id"
+            )
+
+        except ImportError as e:
+            logger.error(f"无法导入飞书 Stream 模块: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"通过 Open ID 发送飞书消息失败: {e}")
+            return False
+
+    def _send_open_id_chunked(self, client, content: str, max_bytes: int) -> bool:
+        """通过 Open ID 分批发送长消息"""
+        try:
+            chunks = chunk_content_by_max_bytes(content, max_bytes, add_page_marker=True)
+        except ValueError as e:
+            logger.error("飞书消息分片失败: %s", e)
+            return False
+
+        total_chunks = len(chunks)
+        success_count = 0
+
+        logger.info(f"飞书（Open ID）分批发送：共 {total_chunks} 批")
+
+        for i, chunk in enumerate(chunks):
+            try:
+                if client.send_to_chat(
+                    chat_id=self._feishu_user_open_id,
+                    text=chunk,
+                    receive_id_type="open_id"
+                ):
+                    success_count += 1
+                    logger.info(f"飞书第 {i+1}/{total_chunks} 批发送成功")
+                else:
+                    logger.error(f"飞书第 {i+1}/{total_chunks} 批发送失败")
+            except Exception as e:
+                logger.error(f"飞书第 {i+1}/{total_chunks} 批发送异常: {e}")
+
+            if i < total_chunks - 1:
+                time.sleep(1)
+
+        return success_count == total_chunks

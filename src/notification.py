@@ -269,9 +269,13 @@ class NotificationService(
         if self._wechat_url:
             channels.append(NotificationChannel.WECHAT)
         
-        # 飞书
+        # 飞书（Webhook 或 Stream 模式）
         if self._feishu_url:
             channels.append(NotificationChannel.FEISHU)
+        elif hasattr(self, '_feishu_app_id') and hasattr(self, '_feishu_app_secret') and hasattr(self, '_feishu_user_open_id'):
+            # Stream 模式：App ID + Secret + Open ID
+            if self._feishu_app_id and self._feishu_app_secret and self._feishu_user_open_id:
+                channels.append(NotificationChannel.FEISHU)
         
         # Telegram
         if self._is_telegram_configured():
