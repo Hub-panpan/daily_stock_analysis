@@ -448,10 +448,10 @@ class BaseFetcher(ABC):
         df['volume_ratio'] = df['volume'] / avg_volume_5.shift(1)
         df['volume_ratio'] = df['volume_ratio'].fillna(1.0)
         
-        # 保留2位小数
+        # 保留3位小数
         for col in ['ma5', 'ma10', 'ma20', 'volume_ratio']:
             if col in df.columns:
-                df[col] = df[col].round(2)
+                df[col] = df[col].round(3)
         
         return df
     
