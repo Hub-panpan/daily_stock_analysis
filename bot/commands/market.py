@@ -96,10 +96,8 @@ class MarketCommand(BotCommand):
                     news_max_age_days=config.news_max_age_days,
                 )
 
-            # 初始化 AI 分析器
-            analyzer = None
-            if config.gemini_api_key or config.openai_api_key:
-                analyzer = GeminiAnalyzer()
+            # 初始化 AI 分析器（使用 config 以支持 litellm_config.yaml）
+            analyzer = GeminiAnalyzer(config=config)
 
             # 读取配置中的市场区域，与定时任务/CLI 保持一致
             region = getattr(config, 'market_review_region', 'cn')
