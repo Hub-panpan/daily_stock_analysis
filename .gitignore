@@ -78,5 +78,3 @@ verify_*.py
 static/
 /apps/dsa-desktop/dist/
 /apps/dsa-desktop/node_modules/
-# Config with secrets (API keys)
-litellm_config.yaml
