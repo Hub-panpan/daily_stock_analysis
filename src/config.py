@@ -58,6 +58,12 @@ NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "long": 30,
 }
 
+_FIXED_TEMPERATURE_LITELLM_MODELS: Dict[str, Dict[str, float]] = {
+    "kimi-k2.6": {
+        "thinking": 1.0,
+        "non_thinking": 0.6,
+    },
+}
 
 def parse_env_bool(value: Optional[str], default: bool = False) -> bool:
     """Parse common truthy/falsey environment-style values."""
@@ -290,6 +296,153 @@ def get_configured_llm_models(model_list: List[Dict[str, Any]]) -> List[str]:
         seen.add(name)
         models.append(name)
     return models
+
+
+def resolve_litellm_wire_model(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Return the LiteLLM 'wire' model string for a given model identifier."""
+    if not model:
+        return ""
+    normalized = model.strip()
+    if model_list:
+        for entry in model_list:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("model_name") or entry.get("model") or ""
+            if name == normalized:
+                litellm_params = entry.get("litellm_params") or {}
+                if isinstance(litellm_params, dict):
+                    wire = litellm_params.get("model")
+                    if wire:
+                        return wire
+    return normalized
+
+
+def _resolve_litellm_model_list_entry(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Find the best-matching model_list entry for the given model."""
+    if not model or not model_list:
+        return None
+    normalized = resolve_litellm_wire_model(model, model_list).lower()
+    if not normalized:
+        return None
+    for entry in model_list:
+        if not isinstance(entry, dict):
+            continue
+        litellm_params = entry.get("litellm_params") or {}
+        if isinstance(litellm_params, dict):
+            wire = (litellm_params.get("model") or "").strip().lower()
+            if wire and (wire == normalized or wire.startswith(f"{normalized}/")):
+                return entry
+        name = (entry.get("model_name") or entry.get("model") or "").strip().lower()
+        if name and (name == normalized or name.startswith(f"{normalized}/")):
+            return entry
+    return None
+
+
+def _extract_thinking_config(payload: Optional[Dict[str, Any]]) -> Any:
+    """Extract a thinking-mode flag from LiteLLM-style request kwargs."""
+    if not isinstance(payload, dict):
+        return None
+    extra_body = payload.get("extra_body")
+    if isinstance(extra_body, dict) and "thinking" in extra_body:
+        return extra_body.get("thinking")
+    if "thinking" in payload:
+        return payload.get("thinking")
+    return None
+
+
+def _parse_thinking_enabled(value: Any) -> Optional[bool]:
+    """Parse thinking-mode config into True/False/unknown."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"enabled", "enable", "true", "1", "on", "thinking"}:
+            return True
+        if normalized in {"disabled", "disable", "false", "0", "off", "none", "non-thinking", "non_thinking"}:
+            return False
+        return None
+    if isinstance(value, dict):
+        if "enabled" in value:
+            return _parse_thinking_enabled(value.get("enabled"))
+        if "type" in value:
+            return _parse_thinking_enabled(value.get("type"))
+    return None
+
+
+def resolve_litellm_thinking_enabled(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
+    """Resolve whether the outgoing LiteLLM request explicitly enables thinking."""
+    thinking_config = None
+    model_entry = _resolve_litellm_model_list_entry(model, model_list)
+    if model_entry:
+        thinking_config = _extract_thinking_config(model_entry)
+        entry_params = model_entry.get("litellm_params") or {}
+        entry_thinking_config = _extract_thinking_config(entry_params)
+        if entry_thinking_config is not None:
+            thinking_config = entry_thinking_config
+
+    override_thinking_config = _extract_thinking_config(request_overrides)
+    if override_thinking_config is not None:
+        thinking_config = override_thinking_config
+    return _parse_thinking_enabled(thinking_config)
+
+
+def get_fixed_litellm_temperature(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Return a provider-mandated temperature for known strict models."""
+    normalized_model = resolve_litellm_wire_model(model, model_list).lower()
+    if not normalized_model:
+        return None
+    thinking_enabled = resolve_litellm_thinking_enabled(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    model_parts = [part for part in re.split(r"[/\:\s]+", normalized_model) if part]
+    for model_name, temperatures in _FIXED_TEMPERATURE_LITELLM_MODELS.items():
+        if any(part == model_name or part.startswith(f"{model_name}-") for part in model_parts):
+            if thinking_enabled is False and temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+            if temperatures.get("thinking") is not None:
+                return temperatures["thinking"]
+            if temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+    return None
+
+
+def normalize_litellm_temperature(
+    model: str,
+    temperature: Optional[float],
+    *,
+    default: float = 0.7,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Normalize temperature before sending a LiteLLM request."""
+    fixed_temperature = get_fixed_litellm_temperature(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    if fixed_temperature is not None:
+        return fixed_temperature
+    if temperature is None:
+        return default
+    return float(temperature)
 
 
 def resolve_unified_llm_temperature(model: str) -> float:
