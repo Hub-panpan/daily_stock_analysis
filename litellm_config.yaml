@@ -1,6 +1,0 @@
-model_list:
-  - model_name: minimax/MiniMax-M2.7-highspeed
-    litellm_params:
-      model: anthropic/MiniMax-M2.7-highspeed
-      api_key: "sk-9d3888827458319388851f63ecdd420f"
-      api_base: https://v2.aicodee.com
