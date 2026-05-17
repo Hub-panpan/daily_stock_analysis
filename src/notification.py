@@ -368,54 +368,7 @@ class NotificationService(
         Returns:
             已配置的渠道列表
         """
-        channels = []
-        
-        # 企业微信
-        if self._wechat_url:
-            channels.append(NotificationChannel.WECHAT)
-        
-        # 飞书（Webhook 或 Stream 模式）
-        if self._feishu_url:
-            channels.append(NotificationChannel.FEISHU)
-        elif hasattr(self, '_feishu_app_id') and hasattr(self, '_feishu_app_secret') and hasattr(self, '_feishu_user_open_id'):
-            # Stream 模式：App ID + Secret + Open ID
-            if self._feishu_app_id and self._feishu_app_secret and self._feishu_user_open_id:
-                channels.append(NotificationChannel.FEISHU)
-        
-        # Telegram
-        if self._is_telegram_configured():
-            channels.append(NotificationChannel.TELEGRAM)
-        
-        # 邮件
-        if self._is_email_configured():
-            channels.append(NotificationChannel.EMAIL)
-        
-        # Pushover
-        if self._is_pushover_configured():
-            channels.append(NotificationChannel.PUSHOVER)
-
-        # PushPlus
-        if self._pushplus_token:
-            channels.append(NotificationChannel.PUSHPLUS)
-
-       # Server酱3
-        if self._serverchan3_sendkey:
-            channels.append(NotificationChannel.SERVERCHAN3)
-       
-        # 自定义 Webhook
-        if self._custom_webhook_urls:
-            channels.append(NotificationChannel.CUSTOM)
-        
-        # Discord
-        if self._is_discord_configured():
-            channels.append(NotificationChannel.DISCORD)
-        # Slack
-        if self._is_slack_configured():
-            channels.append(NotificationChannel.SLACK)
-        # AstrBot
-        if self._is_astrbot_configured():
-            channels.append(NotificationChannel.ASTRBOT)
-        return channels
+        return self.detect_configured_channels(self._config)
 
     def is_available(self) -> bool:
         """检查通知服务是否可用（至少有一个渠道或上下文渠道）"""
