@@ -332,6 +332,14 @@ class NotificationService(
         if getattr(config, "feishu_webhook_url", None):
             channels.append(NotificationChannel.FEISHU)
 
+        # API 模式：App ID + Secret + User Open ID 也算飞书渠道
+        if (
+            getattr(config, "feishu_app_id", None)
+            and getattr(config, "feishu_app_secret", None)
+            and getattr(config, "feishu_user_open_id", None)
+        ):
+            channels.append(NotificationChannel.FEISHU)
+
         if (
             getattr(config, "telegram_bot_token", None)
             and getattr(config, "telegram_chat_id", None)

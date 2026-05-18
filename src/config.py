@@ -526,6 +526,7 @@ class Config:
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
     feishu_app_secret: Optional[str] = None
+    feishu_user_open_id: Optional[str] = None  # 飞书用户 Open ID（用于 API 推送）
     feishu_folder_token: Optional[str] = None  # 目标文件夹 Token
 
     # === 数据源 API Token ===
@@ -1288,6 +1289,7 @@ class Config:
             stock_list=stock_list,
             feishu_app_id=os.getenv('FEISHU_APP_ID'),
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
+            feishu_user_open_id=os.getenv('FEISHU_USER_OPEN_ID'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),

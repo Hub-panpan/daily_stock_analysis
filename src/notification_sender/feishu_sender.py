@@ -140,30 +140,36 @@ class FeishuSender:
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             }
+            # 使用 interactive 卡片（msg_type 指定），不需要外层 type/card 包装
+            # 内部 div > lark_md 是支持的组合（实测通过）
+            card_elements = []
+            paragraphs = content.split('\n\n')
+            for para in paragraphs:
+                para = para.strip()
+                if not para:
+                    continue
+                card_elements.append({
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": para
+                    }
+                })
+
             payload = {
                 "receive_id": self._feishu_user_open_id,
                 "msg_type": "interactive",
                 "content": json.dumps({
-                    "type": "interactive",
-                    "card": {
-                        "config": {"wide_screen_mode": True},
-                        "header": {
-                            "title": {
-                                "tag": "plain_text",
-                                "content": "股票智能分析报告"
-                            }
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "title": {
+                            "tag": "plain_text",
+                            "content": "📊 股票智能分析报告"
                         },
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "lark_md",
-                                    "content": content
-                                }
-                            }
-                        ]
-                    }
-                }),
+                        "template": "blue"
+                    },
+                    "elements": card_elements
+                }, ensure_ascii=False),
             }
             params = {"receive_id_type": "open_id"}
 
