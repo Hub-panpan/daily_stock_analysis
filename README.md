@@ -19,15 +19,7 @@
 
 简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md)
 
-</div>
 
-## 💖 赞助商 (Sponsors)
-<div align="center">
-  <p align="center">
-    <a href="https://open.anspire.cn/?share_code=QFBC0FYC" target="_blank"><img src="./docs/assets/anspire.png" alt="Anspire Open 一站式模型和搜索服务" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
-    <a href="https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis" target="_blank"><img src="./docs/assets/serpapi_banner_zh.png" alt="轻松抓取搜索引擎上的实时金融新闻数据 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
-  </p>
-</div>
 
 
 ## 🖥️ 产品预览
@@ -256,7 +248,7 @@ python main.py --webui-only
   <tr>
     <td width="92" valign="top"><strong>合作邮箱</strong></td>
     <td valign="top">
-      <a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a><br>
+      <a href="mailto:zhuls345@gmail.com">panpan668706@163.com</a><br>
       项目咨询、部署支持与功能扩展
     </td>
     <td align="center" rowspan="3" valign="middle" width="148">
@@ -266,7 +258,7 @@ python main.py --webui-only
   </tr>
   <tr>
     <td width="92" valign="top"><strong>小红书</strong></td>
-    <td valign="top"><a href="http://xhslink.com/m/tU520DWCKT">欢迎关注小红书</a></td>
+    <td valign="top"><a href="#">欢迎关注小红书</a></td>
   </tr>
   <tr>
     <td width="92" valign="top"><strong>问题反馈</strong></td>
@@ -276,7 +268,7 @@ python main.py --webui-only
 
 ## 📄 License
 
-[MIT License](LICENSE) © 2026 ZhuLinsen
+[MIT License](LICENSE) © 2026 Panpan
 
 欢迎在二次开发或引用时注明本仓库来源，感谢支持项目持续维护。
 
