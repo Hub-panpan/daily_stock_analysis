@@ -2427,6 +2427,7 @@ class Config:
         has_notification = bool(
             self.wechat_webhook_url
             or self.feishu_webhook_url
+            or (self.feishu_app_id and self.feishu_app_secret)  # 飞书 APP_ID 方式
             or (self.telegram_bot_token and self.telegram_chat_id)
             or (self.email_sender and self.email_password)
             or (self.pushover_user_key and self.pushover_api_token)
