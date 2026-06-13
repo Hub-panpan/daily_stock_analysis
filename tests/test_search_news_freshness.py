@@ -17,6 +17,11 @@ if "newspaper" not in sys.modules:
     sys.modules["newspaper"] = mock_np
 
 from src.search_service import SearchResponse, SearchResult, SearchService
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    current_diagnostic_snapshot,
+    reset_run_diagnostic_context,
+)
 
 
 def _result(
@@ -158,6 +163,50 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertEqual([r.title for r in resp.results], ["fresh"])
         p1.search.assert_called_once()
         p2.search.assert_called_once()
+
+    def test_search_stock_news_records_provider_diagnostics_for_fallback(self) -> None:
+        """News search provider attempts should appear in run-flow diagnostics."""
+        today = datetime.now().date()
+        old = (today - timedelta(days=90)).isoformat()
+        fresh = today.isoformat()
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        tavily = SimpleNamespace(
+            is_available=True,
+            name="Tavily",
+            search=MagicMock(return_value=_response([_result("too_old", old)])),
+        )
+        searxng = SimpleNamespace(
+            is_available=True,
+            name="SearXNG",
+            search=MagicMock(return_value=_response([_result("贵州茅台 600519 最新公告", fresh)])),
+        )
+        service._providers = [tavily, searxng]
+
+        token = activate_run_diagnostic_context(
+            trace_id="trace-news",
+            task_id="task-news",
+            query_id="query-news",
+            stock_code="600519",
+            trigger_source="api",
+        )
+        try:
+            response = service.search_stock_news("600519", "贵州茅台", max_results=3)
+            diagnostics = current_diagnostic_snapshot()
+        finally:
+            reset_run_diagnostic_context(token)
+
+        self.assertEqual([item.title for item in response.results], ["贵州茅台 600519 最新公告"])
+        provider_runs = diagnostics["provider_runs"]
+        self.assertEqual([run["data_type"] for run in provider_runs], ["news_search", "news_search"])
+        self.assertEqual([run["provider"] for run in provider_runs], ["Tavily", "SearXNG"])
+        self.assertFalse(provider_runs[0]["success"])
+        self.assertTrue(provider_runs[1]["success"])
+        self.assertEqual(provider_runs[1]["record_count"], 1)
 
     def test_search_stock_news_tries_next_provider_when_chinese_context_is_english_only(self) -> None:
         """Chinese-preferred queries should not stop on English-only provider results."""
@@ -875,11 +924,12 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
                 max_searches=2,
             )
 
-        self.assertGreaterEqual(mock_search.call_count, 1)
+        self.assertEqual(
+            [call[1]["days"] for call in mock_search.call_args_list],
+            [3, service.ANALYTICAL_INTEL_LOOKBACK_DAYS],
+        )
         for call in mock_search.call_args_list:
-            kwargs = call[1]
-            self.assertEqual(kwargs["days"], 3)
-            self.assertEqual(kwargs["max_results"], 6)  # target 3 -> overfetch 6
+            self.assertEqual(call[1]["max_results"], 6)  # target 3 -> overfetch 6
 
         self.assertEqual([item.title for item in intel["latest_news"].results], ["fresh"])
         self.assertEqual(
@@ -888,6 +938,90 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         )
         self.assertIsNone(intel["market_analysis"].results[0].published_date)
         self.assertEqual(intel["market_analysis"].results[1].published_date, expected_analysis_date)
+
+    def test_search_comprehensive_intel_widens_analytical_provider_windows(self) -> None:
+        """Market analysis and earnings should request a longer provider lookback."""
+        fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
+        fresh_text = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh_text)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", fresh_text)]),
+            _response([_result("announcement_item", fresh_text)]),
+            _response([_result("earnings", None)]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=5,
+            )
+
+        self.assertIn("earnings", intel)
+        self.assertEqual(
+            [call[1]["days"] for call in mock_search.call_args_list],
+            [
+                3,
+                service.ANALYTICAL_INTEL_LOOKBACK_DAYS,
+                3,
+                3,
+                service.ANALYTICAL_INTEL_LOOKBACK_DAYS,
+            ],
+        )
+
+    def test_search_comprehensive_intel_analytical_keeps_unknown_dates_and_crops_by_window(self) -> None:
+        """Analytical dimensions keep unknown-date results while clipping known results to 180 days."""
+        today = datetime.now().date()
+        very_old = (today - timedelta(days=220)).isoformat()
+        in_window = (today - timedelta(days=170)).isoformat()
+        fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
+        fresh_text = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh_text)]),
+            _response([
+                _result("market_analysis_too_old", very_old),
+                _result("market_analysis_unknown", None),
+                _result("market_analysis_in_window", in_window),
+            ]),
+            _response([_result("risk_check", fresh_text)]),
+            _response([_result("announcement_item", fresh_text)]),
+            _response([
+                _result("earnings_too_old", very_old),
+                _result("earnings_unknown", None),
+                _result("earnings_in_window", in_window),
+            ]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=5,
+            )
+
+        self.assertEqual(
+            [item.title for item in intel["market_analysis"].results],
+            ["market_analysis_unknown", "market_analysis_in_window"],
+        )
+        self.assertIsNone(intel["market_analysis"].results[0].published_date)
+        self.assertEqual(intel["market_analysis"].results[1].published_date, in_window)
+        self.assertEqual(
+            [item.title for item in intel["earnings"].results],
+            ["earnings_unknown", "earnings_in_window"],
+        )
+        self.assertIsNone(intel["earnings"].results[0].published_date)
+        self.assertEqual(intel["earnings"].results[1].published_date, in_window)
 
     def test_search_comprehensive_intel_etf_risk_check_keeps_unknown_dates(self) -> None:
         """ETF risk_check should avoid strict freshness filtering."""
