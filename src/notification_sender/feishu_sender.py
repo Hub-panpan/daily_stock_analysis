@@ -42,10 +42,14 @@ class FeishuSender:
         self._feishu_keyword = (getattr(config, 'feishu_webhook_keyword', None) or '').strip()
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
-        # API 模式配置（App ID + Secret + User Open ID）
+        # API 模式配置（App ID + Secret + Chat ID，兼容历史字段 feishu_user_open_id）
         self._feishu_app_id = (getattr(config, 'feishu_app_id', None) or '').strip()
         self._feishu_app_secret = (getattr(config, 'feishu_app_secret', None) or '').strip()
-        self._feishu_user_open_id = (getattr(config, 'feishu_user_open_id', None) or '').strip()
+        self._feishu_chat_id = (
+            getattr(config, 'feishu_chat_id', None)
+            or getattr(config, 'feishu_user_open_id', None)
+            or ''
+        ).strip()
         self._tenant_access_token = None
         self._token_expires_at = 0  # token 过期时间戳
 
@@ -126,7 +130,7 @@ class FeishuSender:
         Returns:
             是否发送成功
         """
-        if not self._feishu_user_open_id:
+        if not self._feishu_chat_id:
             logger.warning("飞书 USER_OPEN_ID 未配置，无法通过 API 发送消息")
             return False
 
@@ -157,7 +161,7 @@ class FeishuSender:
                 })
 
             payload = {
-                "receive_id": self._feishu_user_open_id,
+                "receive_id": self._feishu_chat_id,
                 "msg_type": "interactive",
                 "content": json.dumps({
                     "config": {"wide_screen_mode": True},
@@ -260,7 +264,7 @@ class FeishuSender:
             return self._send_feishu_webhook(content, timeout_seconds=timeout_seconds)
 
         # 回退到 API 模式
-        if self._feishu_app_id and self._feishu_app_secret and self._feishu_user_open_id:
+        if self._feishu_app_id and self._feishu_app_secret and self._feishu_chat_id:
             logger.info("Webhook 未配置，使用 API 模式发送飞书消息")
             return self._send_feishu_api_chunked(content, timeout_seconds=timeout_seconds)
 
