@@ -630,6 +630,12 @@ class Config:
     tickflow_api_key: Optional[str] = None
     finnhub_api_key: Optional[str] = None
     alphavantage_api_key: Optional[str] = None
+
+    # === 东方财富妙想 MCP 平台 ===
+    em_api_key: Optional[str] = None       # 东方财富妙想 API Key（默认内置测试 Key）
+    mcp_enabled: bool = True               # 是否启用 MCP 服务
+    mcp_timeout: int = 30                  # MCP 请求超时秒数
+
     longbridge_app_key: Optional[str] = None
     longbridge_app_secret: Optional[str] = None
     longbridge_access_token: Optional[str] = None
@@ -1440,6 +1446,9 @@ class Config:
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
             alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
+            em_api_key=os.getenv('EM_API_KEY') or None,
+            mcp_enabled=parse_env_bool(os.getenv('MCP_ENABLED'), default=True),
+            mcp_timeout=int(os.getenv('MCP_TIMEOUT', '30')),
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
             longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
             longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,

@@ -22,6 +22,7 @@ from api.v1.endpoints import (
     health,
     history,
     intelligence,
+    mcp,
     portfolio,
     stocks,
     system_config,
@@ -113,4 +114,10 @@ router.include_router(
 router.include_router(
     health.router,
     tags=["Health"]
+)
+
+router.include_router(
+    mcp.router,
+    prefix="/mcp",
+    tags=["MCP"]
 )
