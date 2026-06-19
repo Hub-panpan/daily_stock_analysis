@@ -503,6 +503,11 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.debug(f"{stock_name}({code}) 基本面快照写入失败: {e}")
 
+            # Step 2.8: 东方财富妙想 MCP 补充数据（失败不影响主流程）
+            mcp_supplement = self._fetch_mcp_supplement(code, stock_name)
+            if mcp_supplement and isinstance(fundamental_context, dict):
+                fundamental_context['mcp_supplement'] = mcp_supplement
+
             # Step 3: 趋势分析（基于交易理念）— 在 Agent 分支之前执行，供两条路径共用
             trend_result: Optional[TrendAnalysisResult] = None
             try:
@@ -607,6 +612,17 @@ class StockAnalysisPipeline:
                     if news_context
                     else persisted_intelligence_context
                 )
+
+            # Step 4.8: 合并 MCP 补充数据到 news_context
+            mcp_prompt_text = self._format_mcp_supplement_for_prompt(mcp_supplement)
+            if mcp_prompt_text:
+                if news_context:
+                    news_context = f"{news_context}\n\n{mcp_prompt_text}"
+                else:
+                    news_context = mcp_prompt_text
+                mcp_news_count = mcp_supplement.get('news', {}).get('count', 0)
+                news_result_count = (news_result_count or 0) + mcp_news_count
+                logger.info(f"{stock_name}({code}) MCP 补充数据已合并到分析上下文")
 
             # Step 5: 获取分析上下文（技术面数据）
             self._emit_progress(58, f"{stock_name}：正在整理分析上下文")
@@ -831,6 +847,143 @@ class StockAnalysisPipeline:
             logger.exception(f"{stock_name}({code}) 详细错误信息:")
             return None
     
+    # ============================================================
+    # 东方财富妙想 MCP 补充数据
+    # ============================================================
+
+    def _fetch_mcp_supplement(self, code: str, stock_name: str) -> Dict[str, Any]:
+        """
+        从东方财富妙想 MCP 平台获取补充数据（失败返回空 dict）
+
+        并行调用：
+        1. 实体识别（验证股票名称）
+        2. 金融查数（财务数据）
+        3. 资讯搜索（最新公告/研报）
+        4. 金融问答（投资分析）
+        """
+        if not getattr(self.config, 'mcp_enabled', True):
+            return {}
+
+        try:
+            from src.eastmoney_mcp_service import get_mcp_service
+            mcp = get_mcp_service(
+                api_key=self.config.em_api_key,
+                timeout=getattr(self.config, 'mcp_timeout', 30),
+            )
+        except Exception as e:
+            logger.debug(f"MCP 服务不可用: {e}")
+            return {}
+
+        result: Dict[str, Any] = {}
+        self._emit_progress(22, f"{stock_name}：正在获取东方财富妙想数据")
+
+        def _fetch_entity():
+            try:
+                entities = mcp.query_entity(stock_name)
+                return ('entity', entities)
+            except Exception as e:
+                logger.debug(f"MCP 实体识别失败: {e}")
+                return ('entity', [])
+
+        def _fetch_finance():
+            try:
+                finance = mcp.query_finance_data(f"{stock_name}最新财务数据")
+                return ('finance', finance)
+            except Exception as e:
+                logger.debug(f"MCP 金融查数失败: {e}")
+                return ('finance', {})
+
+        def _fetch_news():
+            try:
+                news = mcp.search_news(f"{stock_name}最新公告", days=3)
+                return ('news', news)
+            except Exception as e:
+                logger.debug(f"MCP 资讯搜索失败: {e}")
+                return ('news', {})
+
+        def _fetch_qa():
+            try:
+                qa = mcp.ask_question(f"{stock_name}近期投资价值分析")
+                return ('qa', qa)
+            except Exception as e:
+                logger.debug(f"MCP 金融问答失败: {e}")
+                return ('qa', {})
+
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [
+                    executor.submit(_fetch_entity),
+                    executor.submit(_fetch_finance),
+                    executor.submit(_fetch_news),
+                    executor.submit(_fetch_qa),
+                ]
+                for future in as_completed(futures):
+                    try:
+                        key, value = future.result()
+                        result[key] = value
+                    except Exception as e:
+                        logger.debug(f"MCP 补充数据获取异常: {e}")
+
+            logger.info(
+                f"{stock_name}({code}) MCP 补充数据: "
+                f"entity={len(result.get('entity', []))} "
+                f"finance={'✓' if result.get('finance') else '✗'} "
+                f"news={result.get('news', {}).get('count', 0)} "
+                f"qa={'✓' if result.get('qa', {}).get('answer') else '✗'}"
+            )
+        except Exception as e:
+            logger.debug(f"{stock_name}({code}) MCP 并行获取失败: {e}")
+
+        return result
+
+    def _format_mcp_supplement_for_prompt(self, mcp_supplement: Dict[str, Any]) -> str:
+        """
+        将 MCP 补充数据格式化为 prompt 文本（供 LLM 分析参考）
+        """
+        if not mcp_supplement:
+            return ""
+
+        parts: List[str] = []
+
+        # 金融查数数据（财务报表/估值等）
+        finance = mcp_supplement.get('finance', {})
+        if finance and finance.get('tables'):
+            parts.append("## 东方财富妙想 - Choice 财务数据")
+            if finance.get('query_rewrite'):
+                parts.append(f"查询意图: {finance['query_rewrite']}")
+            for table in finance['tables'][:3]:  # 最多 3 张表
+                if table.get('title'):
+                    parts.append(f"### {table['title']}")
+                if table.get('markdown'):
+                    parts.append(table['markdown'])
+
+        # 资讯搜索（最新公告/研报）
+        news = mcp_supplement.get('news', {})
+        if news and news.get('results'):
+            parts.append("## 东方财富妙想 - 最新资讯")
+            for item in news['results'][:5]:  # 最多 5 条
+                title = item.get('title', '')
+                date = item.get('date', '')
+                source = item.get('source', '')
+                content = item.get('content', '')[:200]
+                parts.append(f"- **{title}** ({date}) {source}")
+                if content:
+                    parts.append(f"  {content}")
+
+        # 金融问答（AI 分析）
+        qa = mcp_supplement.get('qa', {})
+        if qa and qa.get('answer'):
+            parts.append("## 东方财富妙想 - AI 投资分析")
+            parts.append(qa['answer'][:1500])  # 限制长度
+            if qa.get('references'):
+                parts.append("参考来源:")
+                for ref in qa['references'][:5]:
+                    ref_title = ref.get('title', '')
+                    ref_url = ref.get('url', '')
+                    parts.append(f"- {ref_title} {ref_url}")
+
+        return "\n\n".join(parts)
+
     def _enhance_context(
         self,
         context: Dict[str, Any],
