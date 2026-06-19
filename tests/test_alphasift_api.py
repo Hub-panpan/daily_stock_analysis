@@ -7,6 +7,7 @@ import os
 import json
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -542,6 +543,104 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertIn("akshare returned no usable board rows", payload["source_errors"])
         discover.assert_called_once()
 
+    def test_hotspots_refresh_failure_without_cache_returns_friendly_empty_payload(self) -> None:
+        config = self._config(enabled=True)
+        discover = MagicMock(side_effect=RuntimeError("RemoteDisconnected('Remote end closed connection without response')"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "missing-hotspots.json"
+            provider = alphasift_service.DsaEastMoneyHotspotProvider()
+            with (
+                patch("src.services.alphasift_service.DSA_ALPHASIFT_HOTSPOT_CACHE_PATH", cache_path),
+                patch("src.services.alphasift_service._get_alphasift_status_snapshot", return_value=({}, True, {})),
+                patch("src.services.alphasift_service._resolve_hotspot_provider", return_value=("akshare", provider)),
+                patch("src.services.alphasift_service._import_alphasift_hotspot", return_value=SimpleNamespace(discover_hotspots=discover)),
+            ):
+                payload = self._hotspots(config=config, provider="akshare", top=1, refresh=True)
+
+        self.assertEqual(payload["hotspots"], [])
+        self.assertEqual(payload["hotspot_count"], 0)
+        self.assertEqual(payload["source_errors"], ["eastmoney_hotspot_unavailable"])
+        self.assertEqual(payload["message"], "热点源连接中断，暂无可用缓存。")
+        self.assertNotIn("RemoteDisconnected", payload["message"])
+        discover.assert_called_once()
+
+    def test_hotspots_refresh_runtime_failure_without_cache_raises_integration_error(self) -> None:
+        config = self._config(enabled=True)
+        discover = MagicMock(side_effect=RuntimeError("adapter contract returned invalid payload"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "missing-hotspots.json"
+            provider = alphasift_service.DsaEastMoneyHotspotProvider()
+            with (
+                patch("src.services.alphasift_service.DSA_ALPHASIFT_HOTSPOT_CACHE_PATH", cache_path),
+                patch("src.services.alphasift_service._get_alphasift_status_snapshot", return_value=({}, True, {})),
+                patch("src.services.alphasift_service._resolve_hotspot_provider", return_value=("akshare", provider)),
+                patch("src.services.alphasift_service._import_alphasift_hotspot", return_value=SimpleNamespace(discover_hotspots=discover)),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    self._hotspots(config=config, provider="akshare", top=1, refresh=True)
+
+        self.assertEqual(caught.exception.status_code, 424)
+        self.assertEqual(caught.exception.detail["error"], "alphasift_hotspot_refresh_failed")
+        self.assertIn("adapter contract returned invalid payload", caught.exception.detail["message"])
+        discover.assert_called_once()
+
+    def test_hotspots_refresh_non_akshare_failure_without_cache_raises_integration_error(self) -> None:
+        config = self._config(enabled=True)
+        discover = MagicMock(side_effect=RuntimeError("RemoteDisconnected('remote provider failed')"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "missing-hotspots.json"
+            with (
+                patch("src.services.alphasift_service.DSA_ALPHASIFT_HOTSPOT_CACHE_PATH", cache_path),
+                patch("src.services.alphasift_service._get_alphasift_status_snapshot", return_value=({}, True, {})),
+                patch("src.services.alphasift_service._resolve_hotspot_provider", return_value=("custom", "custom")),
+                patch("src.services.alphasift_service._import_alphasift_hotspot", return_value=SimpleNamespace(discover_hotspots=discover)),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    self._hotspots(config=config, provider="custom", top=1, refresh=True)
+
+        self.assertEqual(caught.exception.status_code, 424)
+        self.assertEqual(caught.exception.detail["error"], "alphasift_hotspot_refresh_failed")
+        self.assertIn("RemoteDisconnected", caught.exception.detail["message"])
+        discover.assert_called_once()
+
+    def test_hotspot_provider_retries_transient_eastmoney_failure(self) -> None:
+        import requests
+
+        provider = alphasift_service.DsaEastMoneyHotspotProvider()
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> Dict[str, Any]:
+                return {
+                    "data": {
+                        "diff": [
+                            {"f14": "AI算力", "f3": 4.2, "f140": "工业富联", "f104": 8, "f105": 2},
+                        ]
+                    }
+                }
+
+        get_mock = MagicMock(side_effect=[requests.exceptions.ConnectionError("Connection aborted"), FakeResponse()])
+        provider._last_request_ts = time.monotonic()
+        with (
+            patch("src.services.alphasift_service.time.sleep") as sleep_mock,
+            patch.object(provider._session, "get", get_mock),
+            patch("requests.get", side_effect=AssertionError("bare requests.get should not be used for EastMoney hotspots")) as bare_get,
+        ):
+            frame = provider._fetch_board_names(source_fs="m:90 t:3 f:!50")
+
+        self.assertFalse(frame.empty)
+        self.assertEqual(frame.iloc[0]["name"], "AI算力")
+        self.assertEqual(get_mock.call_count, 2)
+        bare_get.assert_not_called()
+        sleep_values = [call.args[0] for call in sleep_mock.call_args_list if call.args]
+        self.assertIn(0.3, sleep_values)
+        self.assertTrue(any(0 < value <= provider._min_request_interval for value in sleep_values))
+
     def test_hotspots_respects_custom_alphasift_data_dir_for_cache_paths(self) -> None:
         config = self._config(enabled=True)
 
@@ -761,7 +860,90 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(payload["missing_fields"], ["live_stocks"])
         self.assertEqual(payload["source_errors"], ["none: no live detail rows"])
         self.assertEqual(payload["stocks"][0]["source"], "last_good_cache.leader_stocks")
+        self.assertEqual(payload["leader_stocks"][0]["source"], "last_good_cache.leader_stocks")
         self.assertEqual(payload["route"][0]["title"], "AI算力催化")
+
+    def test_hotspot_detail_backfills_stocks_from_contract_leader_stocks(self) -> None:
+        config = self._config(enabled=True)
+
+        def get_hotspot_detail(topic: str, **_kwargs: Any) -> Dict[str, Any]:
+            return {
+                "summary": {"topic": topic, "name": "算力"},
+                "leader_stocks": [{
+                    "code": "300001",
+                    "name": "算力龙头",
+                    "role": "核心龙头",
+                    "source": "last_good_cache.leader_stocks",
+                }],
+                "route": [{"title": "盘中发酵", "description": "真实新闻催化", "source": "news"}],
+            }
+
+        provider = alphasift_service.DsaEastMoneyHotspotProvider()
+        provider.hotspot_detail = MagicMock(side_effect=AssertionError("provider route fallback should not be used"))
+        with (
+            patch("src.services.alphasift_service._get_alphasift_status_snapshot", return_value=({}, True, {})),
+            patch("src.services.alphasift_service._resolve_hotspot_provider", return_value=("akshare", provider)),
+            patch(
+                "src.services.alphasift_service._import_alphasift_hotspot",
+                return_value=SimpleNamespace(get_hotspot_detail=get_hotspot_detail),
+            ),
+        ):
+            payload = self._hotspot_detail(config=config, provider="akshare", topic="AI算力")
+
+        self.assertEqual(payload["stocks"][0]["name"], "算力龙头")
+        self.assertEqual(payload["leader_stocks"][0]["name"], "算力龙头")
+        self.assertEqual(payload["stock_count"], 1)
+        provider.hotspot_detail.assert_not_called()
+
+    def test_hotspot_detail_compat_backfills_from_summary_detail_leader_stocks(self) -> None:
+        payload = alphasift_service._ensure_hotspot_detail_compat_fields({
+            "summary_detail": {
+                "leader_stocks": [{
+                    "code": "300001",
+                    "name": "缓存龙头",
+                    "source": "legacy.summary_detail.leader_stocks",
+                }],
+            },
+        })
+
+        self.assertEqual(payload["stocks"][0]["name"], "缓存龙头")
+        self.assertEqual(payload["leader_stocks"][0]["name"], "缓存龙头")
+        self.assertEqual(payload["stock_count"], 1)
+
+    def test_hotspot_detail_backfills_stocks_from_summary_leader_stocks(self) -> None:
+        config = self._config(enabled=True)
+
+        def get_hotspot_detail(topic: str, **_kwargs: Any) -> Dict[str, Any]:
+            return {
+                "summary": {
+                    "topic": topic,
+                    "name": "算力",
+                    "leader_stocks": [{
+                        "code": "300001",
+                        "name": "嵌套龙头",
+                        "role": "缓存龙头",
+                        "source": "last_good_cache.summary.leader_stocks",
+                    }],
+                },
+                "route": [{"title": "盘中发酵", "description": "真实新闻催化", "source": "news"}],
+            }
+
+        provider = alphasift_service.DsaEastMoneyHotspotProvider()
+        provider.hotspot_detail = MagicMock(side_effect=AssertionError("provider route fallback should not be used"))
+        with (
+            patch("src.services.alphasift_service._get_alphasift_status_snapshot", return_value=({}, True, {})),
+            patch("src.services.alphasift_service._resolve_hotspot_provider", return_value=("akshare", provider)),
+            patch(
+                "src.services.alphasift_service._import_alphasift_hotspot",
+                return_value=SimpleNamespace(get_hotspot_detail=get_hotspot_detail),
+            ),
+        ):
+            payload = self._hotspot_detail(config=config, provider="akshare", topic="AI算力")
+
+        self.assertEqual(payload["stocks"][0]["name"], "嵌套龙头")
+        self.assertEqual(payload["leader_stocks"][0]["name"], "嵌套龙头")
+        self.assertEqual(payload["stock_count"], 1)
+        provider.hotspot_detail.assert_not_called()
 
     def test_hotspot_detail_uses_dsa_detail_cache_after_first_fetch(self) -> None:
         config = self._config(enabled=True)
@@ -790,6 +972,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertFalse(first.get("cache_used", False))
         self.assertTrue(second["cache_used"])
         self.assertEqual(second["stocks"][0]["name"], "盛龙股份")
+        self.assertEqual(second["leader_stocks"][0]["name"], "盛龙股份")
 
     def test_hotspot_detail_refresh_bypasses_dsa_detail_cache(self) -> None:
         config = self._config(enabled=True)
@@ -1019,6 +1202,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(payload["topic"], "玻璃基板")
         self.assertEqual(payload["route"][0]["title"], "盘中发酵")
         self.assertEqual(payload["stocks"][0]["name"], "戈碧迦")
+        self.assertEqual(payload["leader_stocks"][0]["name"], "戈碧迦")
 
     def test_hotspot_detail_route_accepts_slash_containing_topic(self) -> None:
         config = self._config(enabled=True)
