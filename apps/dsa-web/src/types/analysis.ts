@@ -438,6 +438,10 @@ export interface NewsIntelItem {
   title: string;
   snippet: string;
   url: string;
+  source?: string;
+  publishedDate?: string;
+  type?: 'NOTICE' | 'NEWS' | 'INV_NEWS' | string;
+  provider?: 'tavily' | 'eastmoney_mcp' | string;
 }
 
 /** News response */

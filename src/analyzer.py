@@ -1612,6 +1612,9 @@ class AnalysisResult:
     # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
     fundamental_context: Optional[Dict[str, Any]] = None
 
+    # ========== MCP 资讯（搜索返回的原始公告/新闻，供前端渲染「相关资讯」）==========
+    mcp_news_items: Optional[List[Dict[str, Any]]] = None  # MCP search_news 原始结果列表
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -1637,6 +1640,7 @@ class AnalysisResult:
             'sector_position': self.sector_position,
             'company_highlights': self.company_highlights,
             'news_summary': self.news_summary,
+            'mcp_news_items': self.mcp_news_items,  # MCP search_news 原始结果（公告/新闻），供前端渲染
             'market_sentiment': self.market_sentiment,
             'hot_topics': self.hot_topics,
             'analysis_summary': self.analysis_summary,

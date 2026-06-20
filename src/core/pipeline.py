@@ -68,6 +68,7 @@ from src.services.run_diagnostics import (
     record_llm_run,
     record_llm_run_started,
     record_notification_run,
+    record_provider_run,
     reset_run_diagnostic_context,
     sanitize_diagnostic_text,
 )
@@ -544,6 +545,7 @@ class StockAnalysisPipeline:
                     market_phase_summary=market_phase_summary,
                     daily_market_context=daily_market_context,
                     portfolio_context=portfolio_context,
+                    mcp_supplement=mcp_supplement,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -615,13 +617,25 @@ class StockAnalysisPipeline:
 
             # Step 4.8: 合并 MCP 补充数据到 news_context
             mcp_prompt_text = self._format_mcp_supplement_for_prompt(mcp_supplement)
-            if mcp_prompt_text:
-                if news_context:
-                    news_context = f"{news_context}\n\n{mcp_prompt_text}"
-                else:
-                    news_context = mcp_prompt_text
-                mcp_news_count = mcp_supplement.get('news', {}).get('count', 0)
+            mcp_news_count = mcp_supplement.get('news', {}).get('count', 0) if mcp_supplement else 0
+            if mcp_prompt_text or mcp_news_count:
+                if mcp_prompt_text:
+                    if news_context:
+                        news_context = f"{news_context}\n\n{mcp_prompt_text}"
+                    else:
+                        news_context = mcp_prompt_text
                 news_result_count = (news_result_count or 0) + mcp_news_count
+                # 补记 MCP 资讯 provider_run（主线程，diagnostic context 有效）
+                try:
+                    record_provider_run(
+                        data_type="news_search",
+                        provider="EastmoneyMCP",
+                        operation="mcp_search_news",
+                        success=bool(mcp_news_count and mcp_news_count > 0),
+                        record_count=mcp_news_count or 0,
+                    )
+                except Exception as _e:
+                    logger.debug(f"record_provider_run(MCP news) failed: {_e}")
                 logger.info(f"{stock_name}({code}) MCP 补充数据已合并到分析上下文")
 
             # Step 5: 获取分析上下文（技术面数据）
@@ -783,6 +797,11 @@ class StockAnalysisPipeline:
                     result.fundamental_context = fundamental_context
                 result.market_phase_summary = market_phase_summary
                 result.analysis_context_pack_overview = analysis_context_pack_overview
+                # 把 MCP 搜索到的原始新闻列表注入 result（供前端「相关资讯」渲染）
+                if mcp_supplement:
+                    news_data = mcp_supplement.get('news', {})
+                    if news_data.get('results'):
+                        result.mcp_news_items = news_data['results']
                 self._refresh_decision_action_for_final_result(
                     result,
                     report_type=report_type.value,
@@ -1289,6 +1308,7 @@ class StockAnalysisPipeline:
         market_phase_summary: Optional[Dict[str, Any]] = None,
         daily_market_context: Optional[DailyMarketContext] = None,
         portfolio_context: Optional[Dict[str, Any]] = None,
+        mcp_supplement: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1491,6 +1511,23 @@ class StockAnalysisPipeline:
                     result.fundamental_context = fundamental_context
                 result.market_phase_summary = market_phase_summary
                 result.analysis_context_pack_overview = analysis_context_pack_overview
+                # 把 MCP 搜索到的原始新闻列表注入 result（供前端「相关资讯」渲染）
+                if mcp_supplement:
+                    news_data = mcp_supplement.get('news', {})
+                    if news_data.get('results'):
+                        result.mcp_news_items = news_data['results']
+                    # 记录 MCP 资讯 provider_run（Agent 模式分支）
+                    try:
+                        _mcp_news_count = news_data.get('count', 0) if isinstance(news_data, dict) else 0
+                        record_provider_run(
+                            data_type="news_search",
+                            provider="EastmoneyMCP",
+                            operation="mcp_search_news",
+                            success=bool(_mcp_news_count and _mcp_news_count > 0),
+                            record_count=_mcp_news_count or 0,
+                        )
+                    except Exception as _e:
+                        logger.debug(f"record_provider_run(MCP news) failed: {_e}")
                 self._refresh_decision_action_for_final_result(
                     result,
                     report_type=report_type.value,

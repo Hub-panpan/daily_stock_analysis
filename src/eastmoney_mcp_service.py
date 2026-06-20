@@ -154,8 +154,11 @@ class EastmoneyMCPService:
         body = {"content": content, "typeCodes": type_code}
         resp = self._request(_URL_ENTITY_SaaS, body)
 
+        # ── DEBUG: 打印原始返回 ──
+        logger.debug("[MCP] query_entity 原始返回 | content=%s | resp=%s", content, resp)
+
         entity_list = resp.get("data", {}).get("entityList", [])
-        logger.debug("[MCP] 实体识别 '%s' → %d 个实体", content, len(entity_list))
+        logger.info("[MCP] 实体识别 '%s' → %d 个实体", content, len(entity_list))
         return entity_list
 
     def query_finance_data(
@@ -191,6 +194,10 @@ class EastmoneyMCPService:
             "toolContext": self._make_tool_context(),
         }
         resp = self._request(_URL_SEARCH_DATA, body)
+
+        # ── DEBUG: 打印原始返回 ──
+        logger.debug("[MCP] query_finance_data 原始返回 | query=%s | resp=%s", query, resp)
+
         return self._parse_data_response(resp)
 
     def screen_stocks(
@@ -262,6 +269,10 @@ class EastmoneyMCPService:
             body["extra"]["models"] = models
 
         resp = self._request(_URL_ASK, body, timeout=90.0)
+
+        # ── DEBUG: 打印原始返回 ──
+        logger.debug("[MCP] ask_question 原始返回 | question=%s | resp=%s", question, resp)
+
         return self._parse_ask_response(resp)
 
     def search_news(
@@ -289,6 +300,10 @@ class EastmoneyMCPService:
             "toolContext": self._make_tool_context(),
         }
         resp = self._request(_URL_SEARCH_NEWS, body, timeout=60.0)
+
+        # ── DEBUG: 打印原始返回 ──
+        logger.debug("[MCP] search_news 原始返回 | query=%s | days=%d | resp=%s", query, days, resp)
+
         return self._parse_news_response(resp)
 
     def query_macro_data(self, query: str) -> Dict[str, Any]:
@@ -545,14 +560,16 @@ class EastmoneyMCPService:
         if data is None:
             return {"results": [], "count": 0, "raw": resp}
 
+        # 实际数据路径: data.llmSearchResponse.data
+        llm_data = data.get("llmSearchResponse", {}).get("data", [])
         results = []
-        for item in data.get("data", []):
+        for item in llm_data:
             results.append({
                 "title": item.get("title", ""),
                 "content": item.get("content", "")[:500],
                 "source": item.get("source", ""),
                 "date": item.get("date", ""),
-                "url": item.get("url", ""),
+                "url": item.get("jumpUrl", ""),
                 "type": item.get("informationType", ""),
             })
 

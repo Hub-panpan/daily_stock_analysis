@@ -98,12 +98,20 @@ class NewsIntelItem(BaseModel):
     title: str = Field(..., description="新闻标题")
     snippet: str = Field("", description="新闻摘要（最多200字）")
     url: str = Field(..., description="新闻链接")
+    source: str = Field("", description="新闻来源（中文 fallback: 公司公告/投资资讯/财经新闻）")
+    published_date: str = Field("", description="发布日期，格式 YYYY-MM-DD HH:MM:SS")
+    type: str = Field("", description="原始类型: NOTICE/NEWS/INV_NEWS")
+    provider: str = Field("", description="数据来源: tavily / eastmoney_mcp")
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "title": "公司发布业绩快报，营收同比增长 20%",
             "snippet": "公司公告显示，季度营收同比增长 20%...",
-            "url": "https://example.com/news/123"
+            "url": "https://example.com/news/123",
+            "source": "公司公告",
+            "published_date": "2026-06-15 11:46:00",
+            "type": "NOTICE",
+            "provider": "eastmoney_mcp"
         }
     })
 

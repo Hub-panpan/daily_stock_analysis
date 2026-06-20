@@ -139,6 +139,18 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, lan
                       {item.snippet}
                     </p>
                   )}
+                  {(item.source || item.publishedDate) && (
+                    <div className="mt-2 flex items-center gap-2 text-xs text-muted-text">
+                      {item.source && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-secondary-bg/50">
+                          {item.source}
+                        </span>
+                      )}
+                      {item.publishedDate && (
+                        <span>{item.publishedDate}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {item.url && (
                   <a

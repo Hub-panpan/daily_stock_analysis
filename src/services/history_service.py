@@ -340,23 +340,168 @@ class HistoryService:
             logger.error(f"resolve_and_get_detail failed for {record_id}: {e}", exc_info=True)
             return None
 
+    # MCP 新闻 source/type fallback 映射
+    _MCP_SOURCE_FALLBACK = {
+        "NOTICE": "公司公告",
+        "INV_NEWS": "投资资讯",
+        "NEWS": "财经新闻",
+    }
+
+    def _extract_mcp_news_items(self, record) -> List[Dict[str, str]]:
+        """
+        从历史记录的 raw_result JSON 里抽取 mcp_news_items。
+        统一字段映射 + source 兜底 + (title+source+date) 去重。
+        """
+        raw = getattr(record, "raw_result", None)
+        if not raw:
+            return []
+
+        # raw_result 可能是 str/bytes/dict
+        if isinstance(raw, (str, bytes)):
+            try:
+                raw = json.loads(raw)
+            except (ValueError, TypeError):
+                logger.debug("resolve_and_get_news: raw_result is not valid JSON")
+                return []
+
+        if not isinstance(raw, dict):
+            return []
+
+        mcp_items = raw.get("mcp_news_items")
+        if not isinstance(mcp_items, list):
+            return []
+
+        mapped: List[Dict[str, str]] = []
+        seen_keys = {}  # (title, source, date) -> idx
+
+        for it in mcp_items:
+            if not isinstance(it, dict):
+                continue
+
+            title = str(it.get("title", "")).strip()
+            if not title:
+                continue
+
+            content = str(it.get("content", "")).strip()
+            url = str(it.get("url", "")).strip()
+            date = str(it.get("date", "")).strip()
+            raw_source = str(it.get("source", "")).strip()
+            item_type = str(it.get("type", "")).strip()
+
+            # source fallback
+            if raw_source:
+                source = raw_source
+            elif item_type in self._MCP_SOURCE_FALLBACK:
+                source = self._MCP_SOURCE_FALLBACK[item_type]
+            else:
+                source = item_type or "财经新闻"
+
+            # snippet: 取 content 前 260 字
+            snippet = content[:260].strip()
+
+            # 去重 key: (title, source, date)
+            dedup_key = (title, source, date)
+            existing_idx = seen_keys.get(dedup_key)
+
+            if existing_idx is not None:
+                # 保留 content 最长的一条
+                existing_content = mapped[existing_idx].get("_raw_content", "")
+                if len(content) > len(existing_content):
+                    mapped[existing_idx] = {
+                        "title": title,
+                        "snippet": snippet,
+                        "url": url,
+                        "source": source,
+                        "published_date": date,
+                        "type": item_type,
+                        "provider": "eastmoney_mcp",
+                        "_raw_content": content,
+                    }
+            else:
+                seen_keys[dedup_key] = len(mapped)
+                mapped.append({
+                    "title": title,
+                    "snippet": snippet,
+                    "url": url,
+                    "source": source,
+                    "published_date": date,
+                    "type": item_type,
+                    "provider": "eastmoney_mcp",
+                    "_raw_content": content,
+                })
+
+        # 去掉内部辅助字段
+        result = []
+        for m in mapped:
+            result.append({k: v for k, v in m.items() if not k.startswith("_")})
+        return result
+
+    def _merge_news(self, tavily_items: List[Dict[str, str]], mcp_items: List[Dict[str, str]], limit: int) -> List[Dict[str, str]]:
+        """
+        合并 Tavily + MCP 新闻，按 url 去重（优先 Tavily，因 snippet 更长）。
+        """
+        merged: List[Dict[str, str]] = []
+        seen_urls = set()
+
+        # 先放 Tavily（优先级更高）
+        for it in tavily_items:
+            url = (it.get("url") or "").strip()
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            merged.append({
+                "title": it.get("title", ""),
+                "snippet": it.get("snippet", ""),
+                "url": url,
+                "source": it.get("source", ""),
+                "published_date": it.get("published_date", "") or it.get("published_at", ""),
+                "type": "",
+                "provider": "tavily",
+            })
+
+        # 再放 MCP（按 url 去重）
+        for it in mcp_items:
+            url = (it.get("url") or "").strip()
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            merged.append(it)
+
+        return merged[:limit]
+
     def resolve_and_get_news(self, record_id: str, limit: int = 20) -> List[Dict[str, str]]:
         """
         Resolve record_id (int PK or query_id string) and return associated news.
+
+        Merges two sources:
+          1. Tavily news (from news_intel table) — via get_news_intel()
+          2. MCP news (from record.raw_result.mcp_news_items) — via _extract_mcp_news_items()
+
+        Dedup is by URL; Tavily takes priority.
 
         Args:
             record_id: integer PK (as string) or query_id string
             limit: max items to return
 
         Returns:
-            List of news intel dicts
+            List of news intel dicts (unified schema)
         """
         try:
             record = self._resolve_record(record_id)
             if not record:
                 logger.warning(f"resolve_and_get_news: record not found for {record_id}")
                 return []
-            return self.get_news_intel(query_id=record.query_id, limit=limit)
+
+            # 1) Tavily 新闻
+            tavily_items = self.get_news_intel(query_id=record.query_id, limit=limit)
+
+            # 2) MCP 新闻（从 raw_result 抽取）
+            mcp_items = self._extract_mcp_news_items(record)
+
+            # 3) 合并去重
+            return self._merge_news(tavily_items, mcp_items, limit)
         except Exception as e:
             logger.error(f"resolve_and_get_news failed for {record_id}: {e}", exc_info=True)
             return []
