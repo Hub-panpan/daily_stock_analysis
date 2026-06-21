@@ -13,7 +13,7 @@
 6. 宏观经济数据（GDP/CPI/PMI/利率等）
 
 数据来源：东方财富 Choice + 妙想 AI 平台
-认证方式：EM_API_KEY（默认内置，可通过环境变量覆盖）
+认证方式：EM_API_KEY（必须在 .env 中配置）
 
 文档参考：https://ai.eastmoney.com/mxClaw
 """
@@ -46,8 +46,8 @@ _URL_ASK = f"{_BASE_URL}/app-robo-advisor-api/assistant/ask"
 # 实体识别
 _URL_ENTITY_SaaS = f"{_BASE_URL}/entity/saas"
 
-# 默认内置 Key（东方财富妙想平台公开测试 Key）
-_DEFAULT_API_KEY = "em_1DCIJNVsxTjTSeb7ZfX0aocU02jiR5tL"
+# 默认 Key 已迁移至 .env 文件（EM_API_KEY），不再硬编码
+_DEFAULT_API_KEY = ""
 
 # 实体类型映射（参考 mx-finance-data SKILL.md）
 _ENTITY_TYPE_MAP = {
@@ -124,6 +124,12 @@ class EastmoneyMCPService:
         self._max_retries = max_retries
         self._lock = Lock()
 
+        if not self._api_key:
+            logger.warning(
+                "[MCP] EM_API_KEY 未配置！东方财富妙想服务不可用。"
+                " 请在 .env 文件中设置 EM_API_KEY，获取地址：https://ai.eastmoney.com/mxClaw"
+            )
+
         # 统计
         self._call_count = 0
         self._error_count = 0
@@ -131,7 +137,7 @@ class EastmoneyMCPService:
 
         logger.info(
             "[MCP] 东方财富妙想服务已初始化 | key_prefix=%s... | timeout=%ds",
-            self._api_key[:8],
+            self._api_key[:8] if self._api_key else "(未配置)",
             self._timeout,
         )
 
