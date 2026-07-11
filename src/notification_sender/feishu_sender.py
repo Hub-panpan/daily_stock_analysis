@@ -12,6 +12,8 @@ import hmac
 import json
 import logging
 import time
+import uuid as uuid_mod
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
@@ -27,6 +29,54 @@ from src.formatters import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# lark-oapi SDK availability
+# ---------------------------------------------------------------------------
+
+FEISHU_SDK_AVAILABLE = False
+_lark: Any = None  # type: ignore[assignment]
+FEISHU_DOMAIN = "feishu"
+LARK_DOMAIN = "lark"
+try:
+    import lark_oapi as _lark
+    from lark_oapi.api.im.v1 import (
+        CreateMessageRequest,
+        CreateMessageRequestBody,
+    )
+    from lark_oapi.core.const import FEISHU_DOMAIN as _SDK_FEISHU_DOMAIN
+    from lark_oapi.core.const import LARK_DOMAIN as _SDK_LARK_DOMAIN
+
+    FEISHU_DOMAIN = _SDK_FEISHU_DOMAIN
+    LARK_DOMAIN = _SDK_LARK_DOMAIN
+    FEISHU_SDK_AVAILABLE = True
+except ImportError:
+    pass
+
+# File-upload SDK classes (isolated from the core messaging SDK availability
+# so that an older lark-oapi without file support doesn't break App Bot text).
+FEISHU_FILE_SDK_AVAILABLE = False
+_CreateFileRequest: Any = None
+_CreateFileRequestBody: Any = None
+try:
+    from lark_oapi.api.im.v1 import (
+        CreateFileRequest as _CreateFileRequest,
+        CreateFileRequestBody as _CreateFileRequestBody,
+    )
+    FEISHU_FILE_SDK_AVAILABLE = True
+except ImportError:
+    pass
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_APP_SEND_RETRIES = 3
+_APP_SEND_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+_WEBHOOK_SEND_TIMEOUT_SECONDS = 30
+
+# Sentinel for "client not yet initialised".
+_NO_CLIENT = object()
+
 
 class FeishuSender:
     
@@ -37,21 +87,64 @@ class FeishuSender:
         Args:
             config: 配置对象
         """
-        self._feishu_url = getattr(config, 'feishu_webhook_url', None)
-        self._feishu_secret = (getattr(config, 'feishu_webhook_secret', None) or '').strip()
-        self._feishu_keyword = (getattr(config, 'feishu_webhook_keyword', None) or '').strip()
-        self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
-        self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
-        # API 模式配置（App ID + Secret + Chat ID，兼容历史字段 feishu_user_open_id）
-        self._feishu_app_id = (getattr(config, 'feishu_app_id', None) or '').strip()
-        self._feishu_app_secret = (getattr(config, 'feishu_app_secret', None) or '').strip()
-        self._feishu_chat_id = (
-            getattr(config, 'feishu_chat_id', None)
-            or getattr(config, 'feishu_user_open_id', None)
-            or ''
-        ).strip()
-        self._tenant_access_token = None
-        self._token_expires_at = 0  # token 过期时间戳
+        # -- Webhook mode --
+        self._feishu_url = getattr(config, "feishu_webhook_url", None)
+        self._feishu_secret = (getattr(config, "feishu_webhook_secret", None) or "").strip()
+        self._feishu_keyword = (getattr(config, "feishu_webhook_keyword", None) or "").strip()
+        self._feishu_max_bytes = getattr(config, "feishu_max_bytes", 20000)
+        self._feishu_send_as_file = getattr(config, "feishu_send_as_file", False)
+        self._webhook_verify_ssl = getattr(config, "webhook_verify_ssl", True)
+
+        # -- App Bot mode --
+        self._feishu_app_id = (getattr(config, "feishu_app_id", None) or "").strip()
+        self._feishu_app_secret = (getattr(config, "feishu_app_secret", None) or "").strip()
+        self._feishu_chat_id = (getattr(config, "feishu_chat_id", None) or "").strip()
+        self._feishu_receive_id_type = (
+            getattr(config, "feishu_receive_id_type", None) or "chat_id"
+        ).strip().lower()
+        if self._feishu_receive_id_type not in ("chat_id", "open_id"):
+            logger.warning(
+                "无效的 FEISHU_RECEIVE_ID_TYPE=%s，回退为 chat_id",
+                self._feishu_receive_id_type,
+            )
+            self._feishu_receive_id_type = "chat_id"
+        # domain_name must be "feishu" or "lark"; anything else defaulted to feishu.
+        raw_domain = (
+            getattr(config, "feishu_domain", None) or os.getenv("FEISHU_DOMAIN", "feishu")
+        ).strip().lower()
+        if raw_domain not in ("feishu", "lark"):
+            logger.warning(
+                "无效的 FEISHU_DOMAIN=%s，回退为 feishu", raw_domain
+            )
+            raw_domain = "feishu"
+        self._feishu_domain = FEISHU_DOMAIN if raw_domain == "feishu" else LARK_DOMAIN
+
+        self._app_client: Any = _NO_CLIENT
+        self._app_client_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_card_body(content: str) -> dict:
+        """Build a Feishu interactive-card body (without the ``msg_type`` wrapper)."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "股票智能分析报告"},
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": content},
+                }
+            ],
+        }
+
+    # ------------------------------------------------------------------
+    # Webhook helpers (unchanged legacy path)
+    # ------------------------------------------------------------------
 
     def _get_keyword_prefix(self) -> str:
         """Return the keyword prefix required by Feishu webhook security settings."""
@@ -267,6 +360,128 @@ class FeishuSender:
         if self._feishu_app_id and self._feishu_app_secret and self._feishu_chat_id:
             logger.info("Webhook 未配置，使用 API 模式发送飞书消息")
             return self._send_feishu_api_chunked(content, timeout_seconds=timeout_seconds)
+
+    def send_feishu_file(self, file_path: str) -> bool:
+        """
+        Upload and send a file to the Feishu chat.
+
+        .. note::
+
+           * **App Bot mode** – uploads the file via the lark-oapi SDK and
+             sends it as a file message.  This is the recommended path.
+           * **Webhook mode** – reads the file content and sends it as a
+             regular text/card message (webhooks do not support file upload).
+
+        Args:
+            file_path: Absolute or relative path to the local file.
+
+        Returns:
+            Whether the send succeeded.
+        """
+        path = Path(file_path)
+        if not path.is_file():
+            logger.error("send_feishu_file: 文件不存在: %s", file_path)
+            return False
+
+        if self._feishu_url:
+            # Webhook mode: send file content as a message (best-effort).
+            return self._send_file_via_webhook(path)
+
+        # App Bot mode: upload file via SDK.
+        return self._send_file_via_app_bot(path)
+
+    def _send_file_via_app_bot(self, path: Path) -> bool:
+        """Upload *path* to Feishu via App Bot SDK and send as file message."""
+        if not FEISHU_FILE_SDK_AVAILABLE:
+            logger.warning("lark-oapi SDK does not support file upload; upgrade lark-oapi")
+            return False
+
+        if not self._feishu_chat_id:
+            logger.warning("FEISHU_CHAT_ID 未配置，跳过 App Bot 文件推送")
+            return False
+
+        client = self._ensure_app_client()
+        if client is None:
+            return False
+
+        file_name = path.name
+        # Determine file_type from extension; fall back to "stream" for unknown types.
+        feishu_file_types = {
+            ".opus": "opus", ".aac": "aac", ".amr": "amr", ".mp3": "mp3",
+            ".wma": "wma", ".pcm": "pcm", ".wav": "wav",
+            ".mp4": "mp4", ".gif": "gif",
+            ".pdf": "pdf",
+            ".doc": "doc", ".docx": "docx",
+            ".xls": "xls", ".xlsx": "xlsx",
+            ".ppt": "ppt", ".pptx": "pptx",
+        }
+        file_type = feishu_file_types.get(path.suffix.lower(), "stream")
+
+        try:
+            with path.open("rb") as f:
+                body = (
+                    _CreateFileRequestBody.builder()
+                    .file_type(file_type)
+                    .file_name(file_name)
+                    .file(f)  # type: ignore[arg-type]
+                    .build()
+                )
+                req = (
+                    _CreateFileRequest.builder()
+                    .request_body(body)
+                    .build()
+                )
+                resp = client.im.v1.file.create(req)
+        except Exception as e:
+            logger.error("App Bot 文件上传异常: %s: %s", type(e).__name__, e)
+            return False
+
+        if not resp.success():
+            try:
+                log_id = resp.get_log_id()
+            except (AttributeError, Exception):
+                log_id = "N/A"
+            logger.error(
+                "App Bot 文件上传失败: code=%s, msg=%s, log_id=%s",
+                resp.code, resp.msg, log_id,
+            )
+            return False
+
+        file_key = resp.data.file_key if resp.data else None
+        if not file_key:
+            logger.error("App Bot 文件上传成功但未返回 file_key")
+            return False
+
+        logger.info("App Bot 文件上传成功: file_key=%s, file_name=%s", file_key, file_name)
+
+        # Send a file message with the uploaded file_key.
+        content_json = json.dumps({"file_key": file_key})
+        return self._app_send_raw(client, "file", content_json)
+
+    @staticmethod
+    def _guess_mime_for_webhook(path: Path) -> str:
+        """Determine a human-readable label for webhook fallback."""
+        suffix = path.suffix.lower()
+        labels = {".md": "Markdown", ".txt": "文本", ".pdf": "PDF", ".csv": "CSV"}
+        return labels.get(suffix, suffix.lstrip(".").upper() or "文件")
+
+    def _send_file_via_webhook(self, path: Path) -> bool:
+        """Send file *content* as a Feishu message (webhook fallback)."""
+        try:
+            text = path.read_text("utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            logger.error("读取文件内容失败 (webhook fallback): %s: %s", type(e).__name__, e)
+            return False
+
+        file_label = self._guess_mime_for_webhook(path)
+        header = f"**📄 {file_label} 文件内容: {path.name}**\n\n"
+        content = header + text
+        # Delegate to the existing webhook send path.
+        return self._send_via_webhook(content)
+
+    # ------------------------------------------------------------------
+    # Webhook path (legacy, unchanged)
+    # ------------------------------------------------------------------
 
         logger.warning("飞书 Webhook 和 API 均未配置，跳过推送")
         return False

@@ -8,6 +8,7 @@ from threading import RLock
 from typing import Dict, Iterable, Optional
 
 from src.data.stock_mapping import is_meaningful_stock_name
+from src.services.market_symbol_utils import get_suffix_market, suffix_base_lookup_allowed
 from src.services.stock_index_remote_service import (
     get_remote_stock_index_cache_path,
     is_valid_remote_stock_index_file,
@@ -97,6 +98,59 @@ def _build_stock_name_map(raw_items: list) -> Dict[str, str]:
             stock_name_map[key] = str(name_zh).strip()
 
     return stock_name_map
+
+
+def _add_code_lookup(
+    lookup: dict[str, set[str]],
+    key: str,
+    canonical_code: str,
+) -> None:
+    candidate = str(key or "").strip().upper()
+    canonical = str(canonical_code or "").strip()
+    if not candidate or not canonical:
+        return
+    lookup.setdefault(candidate, set()).add(canonical)
+
+
+def _is_jp_kr_index_code(code: str) -> bool:
+    """Return True for index-backed JP/KR suffix symbols eligible for lookup."""
+    return get_suffix_market(code) in {"jp", "kr"}
+
+
+def _build_stock_code_lookup(raw_items: list) -> Dict[str, str]:
+    exact_lookup: dict[str, set[str]] = {}
+    suffix_base_lookup: dict[str, set[str]] = {}
+
+    for item in raw_items:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+
+        canonical_code = str(item[0] or "").strip()
+        display_code = str(item[1] or "").strip()
+        if not canonical_code:
+            continue
+        if not _is_jp_kr_index_code(canonical_code):
+            continue
+        if len(item) > 8 and item[8] is False:
+            continue
+
+        _add_code_lookup(exact_lookup, canonical_code, canonical_code)
+        _add_code_lookup(exact_lookup, display_code, canonical_code)
+
+        canonical_upper = canonical_code.upper()
+        if "." in canonical_upper and suffix_base_lookup_allowed(canonical_upper):
+            base, _suffix = canonical_upper.rsplit(".", 1)
+            if base.isdigit():
+                _add_code_lookup(suffix_base_lookup, base, canonical_code)
+
+    result: Dict[str, str] = {}
+    for lookup in (exact_lookup, suffix_base_lookup):
+        for key, codes in lookup.items():
+            if key in result:
+                continue
+            if len(codes) == 1:
+                result[key] = next(iter(codes))
+    return result
 
 
 def _load_stock_index_file(index_path: Path) -> Dict[str, str]:
