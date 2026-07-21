@@ -1281,7 +1281,7 @@ const DecisionSignalsPage: React.FC = () => {
             >
               <option value="">{t('decisionSignals.allMarkets')}</option>
               {MARKET_OPTIONS.map((market) => (
-                <option key={market} value={market}>{t(`decisionSignals.market.${market}` as UiTextKey)}</option>
+                <option key={market} value={market}>{getDecisionSignalMarketLabel(market, t)}</option>
               ))}
             </select>
             <input
@@ -1309,7 +1309,9 @@ const DecisionSignalsPage: React.FC = () => {
               aria-label={t('decisionSignals.marketPhase')}
             >
               <option value="">{t('decisionSignals.allPhases')}</option>
-              {PHASE_OPTIONS.map((phase) => <option key={phase} value={phase}>{phase}</option>)}
+              {PHASE_OPTIONS.map((phase) => (
+                <option key={phase} value={phase}>{getDecisionSignalMarketPhaseLabel(phase, t)}</option>
+              ))}
             </select>
             <select
               className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
@@ -1318,7 +1320,9 @@ const DecisionSignalsPage: React.FC = () => {
               aria-label={t('decisionSignals.source')}
             >
               <option value="">{t('decisionSignals.allSources')}</option>
-              {SOURCE_OPTIONS.map((source) => <option key={source} value={source}>{source}</option>)}
+              {SOURCE_OPTIONS.map((source) => (
+                <option key={source} value={source}>{getDecisionSignalSourceTypeLabel(source, t)}</option>
+              ))}
             </select>
             <input
               className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
