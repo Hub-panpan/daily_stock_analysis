@@ -241,10 +241,11 @@ daily_stock_analysis/
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | 单次本地 CLI backend 诊断 stdout/stderr 与最终响应捕获总上限；`--output-last-message` 重复打印到 stdout 的最终响应不重复计入；范围 `1-33554432` | `1048576` | 否 |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | generation backend 全局并发上限；范围 `1-16`，不改变 LiteLLM Router / `MAX_WORKERS` 行为 | `1` | 否 |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | 本地 CLI backend 并发上限；范围 `1-4`，有效并发取它与 `GENERATION_BACKEND_MAX_CONCURRENCY` 的较小值 | `1` | 否 |
+| `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
 | `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
-| `AGENT_LITELLM_MODEL` | Agent 主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析 | - | 否 |
-| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 问股可见对话上下文压缩开关；默认关闭，开启后仅压缩 `session_id` 下 user/assistant 文本历史 | `false` | 否 |
+| `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | 问股上下文压缩策略：`cost` / `balanced` / `long_context_raw_first` | `balanced` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
@@ -280,6 +281,8 @@ daily_stock_analysis/
 > *注：`ANSPIRE_API_KEYS`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 或 `OLLAMA_API_BASE` 至少配置一个。`ANSPIRE_API_KEYS` 与 `AIHUBMIX_KEY` 无需配置 `OPENAI_BASE_URL`，系统自动适配。
 
 > 问股 single-agent 路径会在后台为 DeepSeek V4 thinking + tool-call 保存最近 3 条 provider trace，并按原时序回放 `reasoning_content` / tool 结果；该能力不新增配置项，不进入 Web 历史 API，Claude extended thinking 仅覆盖离线 plumbing，multi-agent trace 注入留作后续增强。
+
+> `AGENT_BACKEND=codex_app_server` 是仅作用于现有问股 Chat 的实验入口：需在运行 DSA 的设备安装并登录 Codex，Web 路径为「设置 → Agent 设置 → 问股生成方式」，选择后保持 `AGENT_ARCH=single`，并设置大于 0 的整体时限。设置页只检查配置、Codex 命令和所需协议是否允许尝试，不登录、不调用模型或读取股票数据；保存后可直接提问，第一次问题就是第一次真实执行。Codex 当前只能读取已保存的分析上下文和回测汇总；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具请改用「默认模型」。点击停止后，页面会显示“正在停止”；只有 Codex 与本轮工具任务均已退出，才显示最终“已停止”。它当前支持 macOS、Linux 和完整运行于 WSL 的 DSA 后端，暂不支持原生 Windows；Phase 2 `codex_cli` 生成能力不受影响。它不支持 Codex Multi Agent / Codex Deep Research，也不改变现有 LiteLLM Multi Agent、Deep Research、普通报告或定时任务。Codex 不是离线模型，股票问题和脱敏工具结果可能由 Codex 配置的服务处理；DSA 不读取或保存 Codex 凭据。Docker、远程服务器和 Desktop 必须分别保证其后端进程 PATH 可见 Codex。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#codex-本地-agentphase-6-实验原型)。
 
 ### 通知渠道配置
 
@@ -390,6 +393,17 @@ daily_stock_analysis/
 
 兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
 
+### Futu 持仓导入配置
+
+| 变量名 | 说明 | 默认值 | 必填 |
+|--------|------|--------|:----:|
+| `FUTU_OPEND_HOST` | OpenD 地址；锁定的 `futu-api==10.8.6808` 仅支持 IPv4 地址或可解析到 IPv4 的主机名。跨主机连接只应使用受信网络或本机端口转发。 | `127.0.0.1` | 可选 |
+| `FUTU_OPEND_PORT` | OpenD 端口，合法范围 `1-65535`。 | `11111` | 可选 |
+| `FUTU_SECURITY_FIRM` | Futu `SecurityFirm` 枚举名；`NONE` 表示使用 SDK 官方自动识别一次，也可显式指定券商。 | `NONE` | 可选 |
+| `FUTU_ACC_ID` | 指定一个符合条件的 REAL 账户 ID；留空时合并所有状态为 `ACTIVE` 的 `NORMAL`（普通）和 `MASTER`（主）证券账户。账户 ID 应按敏感配置处理，不要提交到仓库。 | 空 | 可选 |
+
+`MASTER` 仅表示 Futu 的主账户角色，不表示账户具有只读属性。本集成的只读边界来自它只调用账户、持仓和证券信息查询接口，不调用交易解锁、下单、改单或撤单接口。
+
 ### 数据源配置
 
 | 变量名 | 说明 | 默认值 | 必填 |
@@ -413,7 +427,7 @@ daily_stock_analysis/
 | `REALTIME_SOURCE_PRIORITY` | 实时行情源优先级，逗号分隔，例如 `tencent,akshare_sina,efinance,akshare_em`；需要显式加入 `tickflow` 才会使用 TickFlow 实时行情。 | 见 `.env.example` | 可选 |
 | `ENABLE_FUNDAMENTAL_PIPELINE` | 基本面聚合总开关；关闭时仅返回 `not_supported` 块，不改变原分析链路 | `true` | 可选 |
 | `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` | 基本面阶段总时延预算（秒） | `8.0` | 可选 |
-| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | 单能力源调用超时（秒） | `3.0` | 可选 |
+| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | 单能力源调用超时（秒）；市场结构行业/概念排行也复用该预算 | `8.0` | 可选 |
 | `FUNDAMENTAL_RETRY_MAX` | 基本面能力重试次数（含首次） | `1` | 可选 |
 | `FUNDAMENTAL_CACHE_TTL_SECONDS` | 基本面聚合缓存 TTL（秒），短缓存减轻重复拉取 | `120` | 可选 |
 | `FUNDAMENTAL_CACHE_MAX_ENTRIES` | 基本面缓存最大条目数（TTL 内按时间淘汰） | `256` | 可选 |
@@ -433,6 +447,7 @@ daily_stock_analysis/
 > - TickFlow 日 K 区间请求会显式传入 `start_time` / `end_time` / `count`；官方 quickstart 明确说明时间范围查询仍受 `count` 限制。若返回非空但行数打满 `count` 且首个返回交易日晚于请求起始交易日，系统会判定为疑似截断，不写入缓存并让 manager 继续回退。
 > - 批量分析时，`prefetch_daily_klines()` 会在逐股 `get_daily_data()` 之前预热进程内缓存，不改变对外调用路径。
 > - TickFlow 能力按套餐权限分层：有限权限套餐仍可使用主指数查询；支持 `CN_Equity_A` 标的池查询的套餐才会启用 TickFlow 市场统计。
+> - TickFlow 可通过申万一级行业标的池与全 A 股行情生成行业涨跌排行，并优先参与市场结构行业主线 fallback；概念题材排行仍由现有 AkShare / Tushare / Efinance 链路提供。
 > - TickFlow 官方 quickstart 提供了 `quotes.get(universes=["CN_Equity_A"])` 用法，但不同 API Key 不一定拥有对应权限；批量日 K、深度和财务等能力也按权限 fail-open。
 > - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
 > - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面信号、指数明细、板块 Top 表、近三日市场线索、明日交易计划和风险提示；盘面信号以 `66/100（偏暖，可进攻）` 这类纯文本分数表达，避免色块进度条在不同终端显示不一致；近三日市场线索只列标题、来源和链接，不再展示搜索摘要片段；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
@@ -683,6 +698,7 @@ python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --stocks 600519,300750 # 指定股票
+python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
@@ -690,6 +706,25 @@ python main.py --force-run            # 非交易日也强制执行（Issue #373
 python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
+
+### Futu 真实持仓作为分析列表
+
+标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.8.6808`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：
+
+```bash
+# 仅裁剪过的自定义环境需要执行下一行
+pip install "futu-api==10.8.6808"
+# 所有标准安装均可直接运行
+python main.py --portfolio futu
+```
+
+`--portfolio futu` 固定读取状态明确为 `ACTIVE` 的 `REAL` 真实证券账户，并在每次分析开始前用 `refresh_cache=True` 刷新持仓；状态缺失、`N/A`、未知或 `DISABLED` 的账户一律拒绝。未设置 `FUTU_ACC_ID` 时会合并所有可用的 `NORMAL`（普通）及 `MASTER`（主）证券账户并按代码去重；设置后只读取指定的正整数账户 ID。根据 [Futu `get_acc_list` 账户角色定义](https://openapi.futunn.com/futu-api-doc/trade/get-acc-list.html)，`MASTER` 表示主账户而非只读属性，马来西亚 `IPO` 账户不属于本功能的持仓来源并会被跳过。本集成的只读边界来自它只调用查询接口。
+
+只有持仓方向明确为 `LONG`、Futu 静态类型为 `STOCK` 且数量非零的正股持仓会进入分析；`SHORT`、方向未知、期权、ETF、窝轮、期货等持仓会被排除。Futu 持仓代码转换仅支持沪深 A 股、港股和美股；沪深 B 股、日股及其他 Futu 市场持仓会在日志中列出代码并跳过，这不改变手工股票列表的既有市场支持边界。如果可用账户 ID 无效，或 `LONG` 持仓数量无效、非零 `LONG` 持仓代码无效、静态类型缺失 / 未知，或已确认的正股代码无法转换为当前分析格式，整次持仓导入会明确失败，不会返回静默截断的部分结果。
+
+OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖。锁定的 `futu-api==10.8.6808` 网络层使用 IPv4 socket，因此 `FUTU_OPEND_HOST` 应填写 IPv4 地址或可解析到 IPv4 的主机名，不支持 `::1` 等 IPv6 地址。在 Docker 容器中，`127.0.0.1` 指向容器自身；OpenD 运行在宿主机时，macOS / Windows 可设置 `FUTU_OPEND_HOST=host.docker.internal`，Linux 需要先为容器增加 `host.docker.internal:host-gateway` 映射后再使用该主机名。跨主机连接会传输真实账户与持仓信息；[Futu 官方建议实盘连接配置协议加密](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html)。本功能不修改进程级 SDK 加密配置，建议优先让 OpenD 与本程序同机，或使用受信网络 / 本机端口转发。未设置 `FUTU_SECURITY_FIRM` 时只使用 Futu SDK 官方的 `SecurityFirm.NONE` 自动识别一次，不会枚举多个券商或在部分探测失败后静默拼接结果；需要固定券商时可显式配置该变量。
+
+若同时传入 `--stocks`，Futu 持仓优先；定时模式会在每轮执行前重新读取真实持仓，而不是复用启动时快照。若没有符合条件的 Futu 持仓，本轮会跳过个股分析且不会回退到 `STOCK_LIST`；已启用的大盘复盘仍按原配置执行，大盘复盘也未请求时不会刷新股票索引或构造分析管线，已启用的自动回测仍作为独立步骤执行。单次 CLI 仅在 SDK、OpenD、账户发现、持仓读取或证券分类等持仓解析边界失败时返回非零退出码；持仓解析成功后的交易日历、分析管线和报告异常仍沿用原分析流程的记录与容错语义。已启动服务与定时调度会记录持仓导入错误并继续运行。该能力只读取账户和持仓，不执行下单、改单、撤单或交易解锁。现有分析日志会记录本轮股票代码，但不会记录账户 ID、持仓数量、成本或资金；分享运行日志前请按需脱敏。
 
 ---
 
@@ -884,6 +919,10 @@ Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreeme
 
 该能力当前只是 `DecisionAgent` 的内部 Prompt 输入管线：摘要写入运行态 `ctx.meta`，不进入 Agent pre-fetched data，不新增 public API、Web/Desktop 展示、history/task status/report metadata、dashboard schema 或最终解释字段。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。#1904 的用户可见最终解释输出仍属于后续阶段。
 
+`AgentResult.runtime_facts` 是内部可选字段，用于保存本次 Orchestrator 运行中已收集的基础 Agent 意见、degradation event、Pipeline termination 和实际 risk application。degradation event 使用 `DURING_STAGE` 区分 stage 自身失败，使用 `BEFORE_STAGE` 表示该 stage 因 Pipeline deadline 或 budget guard 未启动。stage 已完成后触发 deadline check 时不把该 stage 记录为 timeout degradation；`pipeline_termination.last_completed_stage` 从 `AgentRunStats.stage_results` 中最后一个真实 `COMPLETED` 结果取得，也可能为空。
+
+结构化 Orchestrator dashboard 按 input preparation、单次 risk application 和 post-risk finalization 的顺序处理。post-risk finalization 更新 top-level decision/operation advice、core signal/position advice、battle-plan position strategy，以及 DecisionAgent signal/canonical payload。本阶段不处理 dashboard 其他自由文本中的方向性措辞；runtime facts 和 post-risk Agent dashboard 也不表示 Pipeline-final decision，不生成公开 explanation 字段。
+
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 
 P4 新增 `report.details.analysis_context_pack_overview`，历史详情和 completed `/api/v1/analysis/status/{task_id}` 会从已持久化的 `context_snapshot` 返回同一份低敏 overview；同步分析响应也会读取本次已落库的 `analysis_history.context_snapshot` 提取 overview，因此 `SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回该字段。Web 端报告页在“策略点位”和“资讯”之后展示默认折叠的数据块摘要，折叠头部展示可用数、缺失数、非零的其他状态计数和触发来源，展开后展示数据块状态、来源、warning、missing reason、状态计数和新闻结果数。API 返回的 `details.context_snapshot` 会剥离顶层 `analysis_context_pack_overview`，避免透明度面板重复展示 raw snapshot。
@@ -905,6 +944,16 @@ P6 只做文档与配置可见性收口，不新增 pack runtime、不新增 pac
 `SAVE_CONTEXT_SNAPSHOT` 是既有环境变量，P6 只是把它同步到 `.env.example`、配置注册表和 Web 设置帮助。默认 `true`；设为 `false` 或 CLI 使用 `--no-context-snapshot` 时，新历史记录不再持久化整份 `analysis_history.context_snapshot`，包括 `enhanced_context`、`market_phase_summary`、`analysis_context_pack_overview`、诊断快照和 raw snapshot 字段。该设置不关闭当次 `AnalysisContextPack` 构建，不移除 Prompt 中的低敏 `analysis_context_pack_summary`，也不改变分析结果 JSON schema 或 API 请求参数。
 
 当前没有运行时 pack 总开关；如果需要关闭 P3-P5 的 pack Prompt 摘要、overview 或数据质量接入，只能通过发布回滚或代码回滚完成。旧历史记录没有 `analysis_context_pack_overview` / `data_quality` 时继续返回空字段，报告读取保持兼容。
+
+#### 市场结构上下文（Issue #1909）
+
+个股分析现在新增低敏 `market_structure_context`，并通过 `AnalysisReport.details.market_structure` 对历史详情、同步分析响应和 completed 任务状态暴露。该字段采用两层结构：`market_theme_context` 表示大盘/题材层，包含 A 股行业/概念榜单、活跃题材、领涨行业/概念、题材宽度和数据质量；`stock_market_position` 表示个股位置层，包含个股所属板块、主关联题材、题材阶段、个股位置、风险标签和缺失证据。
+
+首版市场结构由 DSA 原生服务基于 `DataFetcherManager.get_sector_rankings()`、`get_concept_rankings()` 和 `fundamental_context.belong_boards` 生成，不依赖 AlphaSift runtime。AlphaSift 中已有的热点详情、发酵路线、成分股和 leader stocks 可作为后续可选数据源迁移，但在未迁移前不会被普通个股分析隐式调用。缺少成分股或 leader 证据时，`stock_role` 默认保持 `follower/edge/unknown`，并在 `missing_fields` 中标记 `hotspot_constituents`、`leader_stocks`，避免把普通关联股误写成题材龙头。
+
+兼容性边界：`market_structure_context` 中的 provider / model 快照字段（含 `model_used`、`market_structure_context.*.source.provider` 等）仅用于历史回溯和页面展示，不构成 LLM provider 路由、`base URL`、`provider/model` 运行时配置输入；不会触发 `.env` 配置清理、回写、迁移或静默变更。
+
+普通 LLM、single Agent 和 multi-agent prompt 会注入市场结构低敏摘要；DecisionSignal 自动提取会把 `primary_theme`、`theme_phase`、`stock_role`、版本号和风险标签写入 metadata，不改变主字段、去重键或生命周期规则。Web 报告页在概览后展示“市场位置”卡片，分别呈现大盘题材层和个股位置层；旧历史记录缺少该字段时不展示。非 A 股市场首版返回 `not_supported`，不影响原有报告。
 
 #### 盘中决策护栏与质量校验（Issue #1386 P5）
 
@@ -1508,15 +1557,18 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 ### 功能特性
 
 - 📝 **配置管理** - 查看/修改自选股列表
+- 🗂️ **首页三视图** - 首页新增「历史 / 自选 / 今日」工作区，默认进入历史视图；自选页支持批量提交全部或仅提交“今日未分析”股票
 - 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架
 - 🚀 **快速分析** - 通过 API 接口触发个股分析；首页也提供“大盘复盘”按钮，可在 Docker/server 模式下后台触发大盘复盘
 - 🎯 **策略选择** - 首页支持显式选择分析策略 skill；不传 `skills` 时按系统默认策略运行，便于保持与历史行为兼容
+- 🧪 **今日状态/任务刷新防抖** - 首页「今日」与「自选」通过带有时区感知的历史区间判断并发起分页历史查询；任务完成后由最新一次 stock bar 刷新成功才清除失败态，避免旧请求乱序覆盖新状态导致重复提交
 - 🧭 **首次配置提示** - 首页会读取只读配置状态，缺少 LLM 主渠道、自选股等基础项时提示缺口并引导进入系统设置
 - 📊 **实时进度** - 分析任务状态实时更新，支持多任务并行；普通分析链路在进入 LLM 阶段后会优先尝试 LiteLLM 流式生成，并通过任务 SSE 回灌更细粒度的 `message/progress`
 - 🧪 **AlphaSift 选股任务可恢复** - 选股页提交后台任务后轮询状态，切换页面再返回会恢复当前任务进度或最终结果，避免外部快照/行情/LLM 变慢时丢失反馈
 - 🗂️ **大盘复盘任务可见性** - 首页触发大盘复盘后会返回 `task_id` 并轮询 `GET /api/v1/analysis/status/{task_id}`，在进行中/完成/失败场景给出可见反馈，失败时直接透出报错内容
 - 🗂️ **市场复盘历史独立入口** - 大盘复盘历史通过专用入口与普通个股历史隔离；建议通过 `stock_code=MARKET` + `report_type=market_review` 直接查询与回放大盘复盘记录
 - 🧾 **市场复盘历史可复用** - 大盘复盘任务会持久化到分析历史，`report_type` 为 `market_review`，可直接通过历史列表/详情打开对应 Markdown 或详情页，不会重新触发分析重算
+- 🧭 **市场位置卡片** - A 股普通分析报告会展示市场题材层和个股位置层，区分大盘主线、主关联题材、题材阶段、个股位置和缺失证据
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要
 - 💬 **问股追问上下文** - 从历史报告进入问股后，后续追问会持续携带当前 `stock_code/stock_name`；切回或重载已有问股会话时，会从已加载的历史用户消息恢复基础当前标的；只有用户明确切换标的时才切换上下文，含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题不会污染当前标的
 - 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
@@ -1583,7 +1635,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 > 说明：`market_review_payload` 中的 `breadth` 仅在行情宽度数据真实可用时下发；当美股/港股或接口暂不可用时不下发该字段。前端显示层需按“字段缺失”降级为“暂无数据”而不是展示 0。
 > 说明：该端点若返回 `task_id`，WebUI 会轮询 `GET /api/v1/analysis/status/{task_id}` 展示状态。状态为 `completed` 时给出完成提示（报告已生成并按配置推送），状态为 `failed` 时在前端错误区域显示 `error` 原因。
 > 说明：`GET /api/v1/history/{record_id}/diagnostics` 支持历史记录主键 ID 或 `query_id`，返回 `normal/degraded/failed/unknown` 摘要、关键链路组件和可复制的脱敏 `copy_text`；旧报告缺少诊断快照时返回 `unknown`，不影响报告读取。
-> 说明：`GET /api/v1/history` 的列表摘要可按 `stock_code` 分页查询同一股票历史，并返回趋势判断、分析摘要、模型名与分析时价格/涨跌幅等可选字段；旧记录缺少快照字段时返回空值。Web 报告页的“历史趋势”抽屉复用该接口加载同股历史。
+> 说明：`GET /api/v1/history` 的列表摘要可按 `stock_code` 分页查询同一股票历史，并返回趋势判断、分析摘要、模型名与分析时价格/涨跌幅等可选字段；旧记录缺少快照字段时返回空值。`created_at` 与 `/api/v1/history/stocks` 的 `last_analysis_time` 使用带服务器时区偏移的 ISO 8601 时间戳；日期筛选仍按服务器本地日期解释。Web 报告页的“历史趋势”抽屉复用该接口加载同股历史。
 > 说明：`GET /api/v1/usage/dashboard` 复用 `llm_usage` 审计表，不新增配置项或数据库迁移。接口仅返回已落库的调用次数、Prompt/Completion/Total Token 聚合、模型维度用量和最近调用记录，不推导模型上下文窗口或 provider 元数据。
 > 说明（Issue #1520）：列表中的模型名展示字段仅来源于历史快照中的 `model_used`，仅用于历史回溯展示，不影响运行时模型模型路由（`litellm_model`、`llm_model_list`）、Provider、Base URL 与配置迁移/清理语义。回退方式为回退本次提交，现网历史查询/抽屉/接口链路兼容性保持不变。
 > 说明：历史详情、同步分析响应和 completed 任务状态会在 `report.details.analysis_context_pack_overview` 返回低敏输入数据块 overview；其中同步分析响应依赖本次已持久化的 `analysis_history.context_snapshot`，`SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回 overview。`details.context_snapshot` 会剥离该顶层字段，不返回完整 `AnalysisContextPack` 或 Prompt summary。

@@ -205,9 +205,14 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | Total captured diagnostic stdout/stderr plus final-response size limit for one local CLI backend call; final responses duplicated to stdout by `--output-last-message` are not counted twice; range `1-33554432` | `1048576` | No |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | Global generation backend concurrency cap; range `1-16`, does not change LiteLLM Router or `MAX_WORKERS` behavior | `1` | No |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | Local CLI backend concurrency cap; range `1-4`, effective concurrency is the lower of this value and `GENERATION_BACKEND_MAX_CONCURRENCY` | `1` | No |
+| `AGENT_BACKEND` | Runtime for the existing ask-stock Chat: `auto` (recommended, preserves the default model), `litellm`, or `codex_app_server` (experimental, single-agent Chat only) | `auto` | No |
 | `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. Web settings only expose `auto|litellm`; hand-written local CLI backends return an unsupported tool-calling diagnostic | `auto` | No |
 | `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
-| `AGENT_LITELLM_MODEL` | Optional Agent-only primary model; when empty it inherits the primary model, and bare names are normalized to `openai/<model>` | - | No |
+| `AGENT_LITELLM_MODEL` | Optional primary model for **Default model** ask-stock; empty inherits the primary model and bare names become `openai/<model>`; Codex does not use this setting | - | No |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | LLM compression for visible **Default model** ask-stock history; Codex uses the 20 most recent visible messages and retains this setting | `false` | No |
+| `AGENT_CONTEXT_COMPRESSION_PROFILE` | Default model ask-stock compression profile: `cost`, `balanced`, or `long_context_raw_first` | `balanced` | No |
+| `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | Estimated-history token threshold; blank follows the selected profile preset | - | No |
+| `AGENT_CONTEXT_PROTECTED_TURNS` | Number of recent user turns and following replies kept verbatim; blank follows the selected profile preset | - | No |
 | `LITELLM_FALLBACK_MODELS` | Fallback models, comma-separated | - | No |
 | `LLM_CHANNELS` | Channel names (comma-separated), use with `LLM_{NAME}_*`, see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | No |
 | `LLM_HERMES_API_KEY` | Single API key for the reserved Hermes local HTTP generation channel; provide it through `.env`, runtime config, or Secrets only | - | Required for Hermes |
@@ -230,6 +235,8 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 > GitHub Actions note: the bundled `00-daily-analysis.yml` explicitly uses `litellm` when `GENERATION_FALLBACK_BACKEND` is not configured, so an unset Secret/Variable is not exported as an empty value that disables backend fallback. To disable backend fallback in Actions, set the fallback to the primary backend and let the resolver treat it as self no-op.
 
 > Generation backend status note: the Web settings quick check only reads config, drafts, and executable visibility; it does not send a real model request. JSON smoke test is a separate explicit action that sends one real request with a server-owned fixed JSON prompt/schema. `health_status` and `last_error_code/message` describe only the current status computation or smoke result, not persisted historical health.
+
+> `AGENT_BACKEND=codex_app_server` is an experimental option only for the existing ask-stock Chat. Install and sign in to Codex on the device running DSA, then open **Settings → Agent → Ask-stock method**, keep `AGENT_ARCH=single`, and set a positive overall timeout. Settings checks only whether the configuration, Codex command, and required protocol allow an attempt; it does not sign in, call a model, or read stock data. After saving, ask directly in Chat—the first question is the first real execution. Codex can currently read only saved analysis context and backtest summaries; use **Default model** for live quotes, news, market hotspots, technical-indicator recalculation, per-stock backtest details, or portfolio tools. After the user clicks Stop, the page shows **Stopping** and reports **Stopped** only after both the Codex turn and its current tool task have exited. It currently supports macOS, Linux, and a complete DSA backend running inside WSL; native Windows is not supported, while the Phase 2 `codex_cli` generation path remains unchanged. Codex Multi Agent and Codex Deep Research are not supported; existing LiteLLM Multi Agent, Deep Research, regular reports, and scheduled analysis stay unchanged. Codex is not an offline model, and services configured in Codex may process stock questions and redacted tool results. DSA does not read or store Codex credentials. Docker, remote servers, and Desktop must each expose Codex on the backend process PATH. See the [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md#codex-local-agent-phase-6-experimental-prototype).
 
 > *Note: Configure at least one of `ANSPIRE_API_KEYS`, `AIHUBMIX_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OLLAMA_API_BASE`, or `LLM_CHANNELS` / `LITELLM_CONFIG`. `ANSPIRE_API_KEYS` and `AIHUBMIX_KEY` are auto-adapted without an `OPENAI_BASE_URL`.
 
@@ -320,6 +327,17 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 
 > Behavior note: Search and social sentiment are optional enhancement services. If either service fails to initialize, the system logs a warning and degrades gracefully by skipping that stage without blocking the core analysis flow.
 
+### Futu Portfolio Import Configuration
+
+| Variable | Description | Default | Required |
+|--------|------|--------|:----:|
+| `FUTU_OPEND_HOST` | OpenD host. The pinned `futu-api==10.8.6808` accepts an IPv4 address or a hostname that resolves to IPv4. Cross-host connections should use only a trusted network or local port forwarding. | `127.0.0.1` | Optional |
+| `FUTU_OPEND_PORT` | OpenD port in the range `1-65535`. | `11111` | Optional |
+| `FUTU_SECURITY_FIRM` | Futu `SecurityFirm` enum name. `NONE` performs the SDK's official auto-detection once; set an explicit broker when required. | `NONE` | Optional |
+| `FUTU_ACC_ID` | Select one eligible REAL account ID. When empty, all explicitly `ACTIVE` `NORMAL` and `MASTER` securities accounts are merged. Treat account IDs as sensitive configuration and do not commit them. | empty | Optional |
+
+`MASTER` is Futu's master-account role, not a read-only attribute. This integration is read-only because it calls only account, position, and security-information queries; it never unlocks trading or places, modifies, or cancels orders.
+
 ### Data Source Configuration
 
 | Variable | Description | Default | Required |
@@ -337,7 +355,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `REALTIME_SOURCE_PRIORITY` | Real-time quote source priority (comma-separated), e.g., `tencent,akshare_sina,efinance,akshare_em`; add `tickflow` explicitly to use TickFlow realtime quotes | See .env.example | Optional |
 | `ENABLE_FUNDAMENTAL_PIPELINE` | Master switch for fundamental aggregation; when disabled, returns `not_supported` block only, without altering the original analysis pipeline. | `true` | Optional |
 | `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` | Total latency budget for the fundamental stage (seconds) | `8.0` | Optional |
-| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | Timeout for a single capability source call (seconds) | `3.0` | Optional |
+| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | Timeout for a single capability source call; market-structure industry/concept rankings share this budget | `8.0` | Optional |
 | `FUNDAMENTAL_RETRY_MAX` | Retry count for fundamental capabilities (including the first attempt) | `1` | Optional |
 | `FUNDAMENTAL_CACHE_TTL_SECONDS` | Fundamental aggregation cache TTL (seconds), short cache to reduce repeated API pulling. | `120` | Optional |
 | `FUNDAMENTAL_CACHE_MAX_ENTRIES` | Maximum entries for fundamental cache (evicted by time within TTL) | `256` | Optional |
@@ -391,6 +409,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - TickFlow daily K-line range requests pass explicit `start_time` / `end_time` / `count`. Because the official quickstart documents that time-range queries are still limited by `count`, non-empty count-capped responses whose first returned trading date is later than the requested start trading date are rejected before normalization or cache writes, allowing manager fallback to continue.
 > - Batch analysis can warm the per-process TickFlow daily K-line cache through `prefetch_daily_klines()` before per-stock `get_daily_data()` calls. Only validated frames are cached; batch permission failures are negative-cached and degrade to single-stock requests or existing providers.
 > - TickFlow behavior is capability-based rather than just key-based: limited plans can still enhance main CN indices, while plans with `CN_Equity_A` universe query support also enhance market breadth and stock-list/name lookups.
+> - TickFlow can derive SW1 industry rankings from its industry universes and full A-share quotes, and participates first in the market-structure industry fallback. Concept-theme rankings still use the existing AkShare / Tushare / Efinance chain.
 > - The official quickstart documents `quotes.get(universes=["CN_Equity_A"])`, but online smoke tests confirmed two additional real-world constraints: universe access depends on plan permissions, and `quotes.get(symbols=[...])` has a per-request symbol limit.
 > - TickFlow currently returns `change_pct` / `amplitude` / `turnover_rate` as ratio values; this integration normalizes them to the project's percent convention so they match AkShare / Tushare / efinance semantics.
 > - In scheduler mode, if runtime env explicitly sets `RUN_IMMEDIATELY` but does not set `SCHEDULE_RUN_IMMEDIATELY`, the scheduler keeps inheriting the legacy runtime override instead of being pulled back to a persisted `.env` alias value.
@@ -610,12 +629,32 @@ python main.py                        # Full analysis (stocks + market review)
 python main.py --market-review        # Market review only
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
+python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
 python main.py --dry-run              # Fetch data only, no AI analysis
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
 python main.py --workers 5            # Specify concurrency
 ```
+
+### Use real Futu holdings as the analysis list
+
+Standard source installs (`pip install -r requirements.txt`), official Docker images, and Windows/macOS Desktop backends already include the pinned `futu-api==10.8.6808`. Install it manually from the [Futu OpenAPI SDK guide](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) only when using a reduced custom Python environment. After starting and signing in to Futu OpenD, run:
+
+```bash
+# Only reduced custom environments need the next line
+pip install "futu-api==10.8.6808"
+# Standard installs can run the command directly
+python main.py --portfolio futu
+```
+
+`--portfolio futu` only reads `REAL` securities accounts whose status is explicitly `ACTIVE`, and refreshes positions with `refresh_cache=True` before each analysis run. Accounts with a missing, `N/A`, unknown, or `DISABLED` status are rejected. Without `FUTU_ACC_ID`, it merges all usable `NORMAL` and `MASTER` securities accounts and deduplicates symbols; when set, only that positive integer account ID is read. Per the [Futu `get_acc_list` account-role contract](https://openapi.futunn.com/futu-api-doc/en/trade/get-acc-list.html), `MASTER` means the master-account role rather than a read-only attribute, and Malaysian `IPO` accounts are not portfolio sources. The integration is read-only because it calls only query APIs.
+
+Only non-zero positions whose direction is explicitly `LONG` and whose Futu static type is `STOCK` are analyzed. `SHORT`, unknown-direction, option, ETF, warrant, futures, and other non-stock positions are excluded. Futu portfolio conversion is limited to Shanghai/Shenzhen A-shares, HK stocks, and US stocks. Shanghai/Shenzhen B-shares, JP holdings, and holdings from other Futu markets are logged with their codes and skipped; this does not change the market support for manually configured stock lists. An invalid eligible account ID, an invalid quantity on a `LONG` position, an invalid or missing code on a non-zero `LONG` position, a missing or unknown static type, or a confirmed stock code that cannot be converted to the analysis format fails the whole import instead of returning a silently truncated result.
+
+OpenD defaults to `127.0.0.1:11111`; override it with `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT`. The pinned `futu-api==10.8.6808` networking layer uses IPv4 sockets, so `FUTU_OPEND_HOST` must be an IPv4 address or a hostname that resolves to IPv4; IPv6 addresses such as `::1` are unsupported. Inside a Docker container, `127.0.0.1` refers to the container itself. When OpenD runs on the host, set `FUTU_OPEND_HOST=host.docker.internal` on macOS or Windows; on Linux, add a `host.docker.internal:host-gateway` mapping to the container before using that hostname. Cross-host connections carry real account and position data, and [Futu recommends protocol encryption for real-trading connections](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html). This integration does not modify process-wide SDK encryption settings; prefer running OpenD on the same host, or use a trusted network or local port forwarding. When `FUTU_SECURITY_FIRM` is unset, discovery makes one call with the Futu SDK's official `SecurityFirm.NONE` auto-detection mode; it does not enumerate brokers or silently combine partial probe results. Set the variable explicitly when a fixed broker is required.
+
+If `--stocks` is also present, the Futu portfolio wins. Scheduled mode reloads real positions for every run instead of reusing a startup snapshot. If no Futu holdings qualify, stock analysis is skipped without falling back to `STOCK_LIST`; an enabled market review still runs according to its existing configuration. When no market review is requested either, the run does not refresh the stock index or construct the analysis pipeline; an enabled auto-backtest still runs as an independent step. A one-shot CLI exits non-zero only when SDK, OpenD, account discovery, position loading, or security classification fails inside the portfolio-resolution boundary. Trading-calendar, pipeline, and report failures after a successful portfolio import retain the existing analysis error semantics. An already running service or scheduler logs portfolio import errors and continues. This integration only reads accounts and positions; it does not place, modify, cancel, or unlock trades. Existing analysis logs include the stock symbols for the current run, but not account IDs, quantities, costs, or cash balances; redact those symbols as needed before sharing logs.
 
 ---
 
@@ -743,6 +782,10 @@ Before `DecisionAgent` runs, the multi-agent pipeline builds an internal low-sen
 
 This is currently only internal Prompt input plumbing for `DecisionAgent`: the summary is stored in runtime `ctx.meta`, is not injected through Agent pre-fetched data, and does not add public API fields, Web/Desktop display, history/task-status/report metadata, dashboard schema, or final explanation fields. `risk_level=high` is risk evidence only and does not trigger override by itself; the summary and final `_apply_risk_override()` share the same override predicate and respect `AGENT_RISK_OVERRIDE=false`. Non-critical degraded stages reuse the orchestrator contract for `intel`, `risk`, and specialist/skill agents, so a remaining single directional opinion is not described as multi-agent consensus. User-visible final explanation output for #1904 remains a later phase.
 
+`AgentResult.runtime_facts` is an optional internal field for facts collected during the current Orchestrator run: base Agent opinions, degradation events, Pipeline termination, and the actual risk application. A degradation event uses `DURING_STAGE` for a stage failure and `BEFORE_STAGE` when that stage did not start because of the Pipeline deadline or budget guard. A completed stage is not recorded as a timeout degradation when the deadline check fires afterward. `pipeline_termination.last_completed_stage` is taken from the latest actual `COMPLETED` result in `AgentRunStats.stage_results` and may be empty.
+
+A structured Orchestrator dashboard is processed as input preparation, one risk application, and post-risk finalization. Post-risk finalization updates the top-level decision and operation advice, core signal and position advice, battle-plan position strategy, and the DecisionAgent signal/canonical payload. This stage does not rewrite directional wording in other free-text dashboard fields. Runtime facts and the post-risk Agent dashboard do not represent the Pipeline-final decision and do not generate a public explanation field.
+
 ### AnalysisContextPack Low-Sensitivity Visibility (Issue #1389 P4)
 
 P4 adds `report.details.analysis_context_pack_overview`. History detail and completed `/api/v1/analysis/status/{task_id}` responses read the same low-sensitivity overview from the persisted `context_snapshot`; sync analysis responses also extract the overview from the just-persisted `analysis_history.context_snapshot`, so new records do not guarantee this field when `SAVE_CONTEXT_SNAPSHOT=false`. The Web report page renders a collapsed data-block summary after Strategy and News, with available/missing counts, non-zero other status counts, and trigger source in the header and data-block status, source, warnings, missing reasons, status counts, and news result count after expansion. API `details.context_snapshot` strips the top-level `analysis_context_pack_overview` so the raw snapshot panel does not duplicate the public overview.
@@ -764,6 +807,16 @@ P6 is a documentation and configuration-visibility closure only. It does not add
 `SAVE_CONTEXT_SNAPSHOT` is an existing environment variable; P6 only exposes it through `.env.example`, the config registry, and Web settings help. It defaults to `true`. When set to `false`, or when the CLI uses `--no-context-snapshot`, new history records no longer persist the full `analysis_history.context_snapshot`, including `enhanced_context`, `market_phase_summary`, `analysis_context_pack_overview`, diagnostic snapshots, and raw snapshot fields. This setting does not disable current-run `AnalysisContextPack` construction, does not remove the low-sensitivity `analysis_context_pack_summary` from prompts, and does not change report JSON schemas or API request parameters.
 
 There is no runtime pack master switch. Disabling the P3-P5 pack prompt summary, overview, or data-quality integration requires a release rollback or code rollback. Older history records without `analysis_context_pack_overview` / `data_quality` continue to return empty fields and remain readable.
+
+### Market Structure Context (Issue #1909)
+
+Stock analysis now builds a low-sensitivity `market_structure_context` and exposes it as `AnalysisReport.details.market_structure` in history detail, sync analysis responses, and completed task status responses. The contract has two layers: `market_theme_context` for the market/theme layer, and `stock_market_position` for the individual stock's position inside those themes.
+
+The first version is DSA-native: it uses `DataFetcherManager.get_sector_rankings()`, `get_concept_rankings()`, and `fundamental_context.belong_boards`. It does not require AlphaSift at runtime. AlphaSift hotspot details, route timelines, constituents, and leader stocks can be migrated later as optional sources; until then, missing constituent/leader evidence is explicit and the stock role stays conservative (`follower`, `edge`, or `unknown`). Non-A-share markets return `not_supported`.
+
+Compatibility boundary: provider/model snapshot fields in this change (including `model_used` and market structure source provider markers) are display/history metadata only. They do not participate in runtime provider routing, `base URL`, model selection, `.env` config cleanup, or migration/overwrite logic.
+
+Regular LLM, single Agent, and multi-agent prompts receive the low-sensitivity summary. DecisionSignal extraction writes `primary_theme`, `theme_phase`, `stock_role`, contract versions, and risk tags into metadata without changing primary fields or deduplication keys. The Web report page shows a market-position card after the overview; older reports without this field simply omit the card.
 
 ### Intraday Decision Guardrails and Quality Checks (Issue #1386 P5)
 
@@ -1330,15 +1383,18 @@ FastAPI provides RESTful API service for configuration management and triggering
 ### Features
 
 - **Configuration Management** - View/modify watchlist
+- **Home workspace tri-view** - Home now has History / Watchlist / Today tabs, with History as the default view; Watchlist supports batch submission for all stocks or only those not analyzed today
 - **UI Language Switch** - Toggle UI language (`zh`/`en`) on login page, shell/navigation, settings page, and shared controls; this switch is independent of `REPORT_LANGUAGE`.
 - **Quick Analysis** - Trigger stock analysis via API; the Home page also provides a Market Review button that starts a background market recap in Docker/server mode
 - **Strategy selection** - The Home page supports explicitly selecting analysis strategy skills; when `skills` is omitted, analysis uses the server default strategy so legacy clients keep existing behavior
+- **Today-state refresh safety** - Today and watchlist status loading uses history lookups with explicit timezone-aware date filtering and full pagination; a successful refresh from a newer stock-bar request is required to clear an unknown state, so stale in-flight responses cannot override completion refresh results
 - **First-run Setup Hint** - The Home page reads the read-only setup status and points users to Settings when required items such as the primary LLM channel or watchlist are missing
 - **Real-time Progress** - Analysis task status updates in real-time, supports parallel tasks; the regular stock-analysis path now prefers LiteLLM streaming during the LLM stage and pushes finer-grained `message/progress` updates through task SSE
 - **Recoverable AlphaSift screening** - The Screening page submits AlphaSift work as a background task and polls status, so returning to the page restores the active task progress or final result instead of losing feedback when snapshots, quotes, or LLM calls are slow
 - **Market Review visibility** - After clicking Market Review, the API returns a `task_id` and the UI polls `GET /api/v1/analysis/status/{task_id}` to show progress; completed/failure states are rendered explicitly and failure messages are shown directly in the UI error area.
 - **Market review history dedicated entry** - Market review history is shown in a dedicated history entry and isolated from regular stock history; use `stock_code=MARKET` and `report_type=market_review` to view and replay only market-review records.
 - **Market review history replay** - Market review results are persisted with `report_type=market_review` and can be reopened from history list/detail or Markdown endpoints directly, without re-triggering a fresh analysis run.
+- **Market-position card** - A-share stock reports show a market theme layer and a stock position layer, separating market themes, primary theme, theme phase, stock role, and missing evidence.
 - **Input data-block visibility** - Regular analysis reports expose a low-sensitivity `AnalysisContextPack` overview through history details, sync responses, and completed task status; the Web report page shows the data-block summary collapsed after Strategy and News, with block status, source, missing reasons, and fallback summaries available on expansion.
 - **Ask-stock follow-up context** - When Ask Stock is opened from a historical report, follow-up messages keep sending the active `stock_code/stock_name`; reopening an existing chat can recover the base stock from loaded user messages, and comparison-style prompts do not overwrite the current stock context.
 - **Backtest Validation** - Evaluate historical analysis accuracy, query direction win rate and simulated returns
@@ -1401,7 +1457,7 @@ For this feature, the product behavior is:
 > Note: when `/api/v1/analysis/market-review` returns a `task_id`, the WebUI polls `GET /api/v1/analysis/status/{task_id}`. The UI renders clear `pending/processing` progress, shows completion feedback when status becomes `completed`, and surfaces `error` content on `failed`.
 > Note: filter market-review-only history via `GET /api/v1/history` with `stock_code=MARKET&report_type=market_review` to avoid mixing with regular stock history.
 > Note: `GET /api/v1/history/{record_id}/diagnostics` accepts either the history primary key ID or `query_id`, and returns a `normal/degraded/failed/unknown` summary, key pipeline components, and sanitized `copy_text`. Older reports without `context_snapshot.diagnostics` return `unknown` without affecting normal report reads.
-> Note: `GET /api/v1/history` list summaries can be paginated by `stock_code` for same-stock history and now include optional trend, summary, model, and analysis-time price/change fields. Older rows without persisted snapshots return empty values. The Web report page's "History Trend" drawer reuses this endpoint.
+> Note: `GET /api/v1/history` list summaries can be paginated by `stock_code` for same-stock history and now include optional trend, summary, model, and analysis-time price/change fields. Older rows without persisted snapshots return empty values. `created_at` and `/api/v1/history/stocks` `last_analysis_time` are ISO 8601 timestamps with the server timezone offset; date filters are still interpreted as server-local dates. The Web report page's "History Trend" drawer reuses this endpoint.
 > Note: `GET /api/v1/usage/dashboard` reuses the existing `llm_usage` audit table and adds no configuration key or database migration. It returns only persisted call counts, prompt/completion/total token aggregates, model-level usage, and recent call records; it does not infer model context windows or provider metadata.
 > Issue #1520 compatibility note: The `model`/`model_used` returned here is read-only historical snapshot metadata from each record, used only for trend drawer/history display. It does not alter runtime model/model-provider/base URL resolution, config migration, or cleanup semantics in the analysis path. Rollback is by reverting this commit; history query, API response shapes, and UI drawer consumption remain compatible.
 > Note: history detail, sync analysis responses, and completed task status responses expose a low-sensitivity input data-block overview at `report.details.analysis_context_pack_overview`; sync analysis responses depend on the just-persisted `analysis_history.context_snapshot`, so new records do not guarantee the overview when `SAVE_CONTEXT_SNAPSHOT=false`. `details.context_snapshot` strips that top-level field and does not return the full `AnalysisContextPack` or prompt summary.
