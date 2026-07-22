@@ -47,7 +47,7 @@ from src.schemas.decision_action import (
     display_action_fields_for_result,
     display_operation_advice_for_result,
 )
-from src.schemas.decision_scale import extract_decision_guardrail_reason>
+from src.schemas.decision_scale import extract_decision_guardrail_reason
 from src.utils.sniper_points import find_sniper_points
 from src.utils.data_processing import (
     extract_realtime_detail_fields,
