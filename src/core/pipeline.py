@@ -867,7 +867,7 @@ class StockAnalysisPipeline:
                 self._refresh_decision_action_for_final_result(
                     result,
                     report_type=report_type.value,
-                    previous_operation_advice=action_source_advice,
+                    previous_operation_advice=advice_before_guardrail,
                 )
 
             # Step 8: 保存分析历史记录
@@ -1798,7 +1798,7 @@ class StockAnalysisPipeline:
                 self._refresh_decision_action_for_final_result(
                     result,
                     report_type=report_type.value,
-                    previous_operation_advice=action_source_advice,
+                    previous_operation_advice=advice_before_guardrail,
                 )
                 # upstream #2044: Pipeline 最终分歧解释注入 dashboard
                 final_action = normalize_decision_action(getattr(result, "action", None))

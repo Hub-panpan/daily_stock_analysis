@@ -365,6 +365,7 @@ def get_stock_bar(
         from datetime import date as date_type
         from src.utils.data_processing import parse_json_field
 
+        service = HistoryService(db_manager)
         start = date_type.fromisoformat(start_date) if start_date else None
         end = date_type.fromisoformat(end_date) if end_date else None
 

@@ -126,6 +126,10 @@ class FeishuSender:
         self._app_client: Any = _NO_CLIENT
         self._app_client_lock = threading.Lock()
 
+        # -- Token cache (must be initialized before _get_tenant_access_token is called) --
+        self._tenant_access_token: Optional[str] = None
+        self._token_expires_at: float = 0.0
+
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
