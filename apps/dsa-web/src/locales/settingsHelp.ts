@@ -324,7 +324,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 Web 自动补全和后端股票名称解析使用的股票简称新鲜度。'],
     notes: ['远程下载失败时会继续使用已有缓存或随应用打包的内置索引。'],
   },
-  'settings.data_source.SCREENING_ENABLED': {
+  'settings.base.SCREENING_ENABLED': {
     title: '选股',
     summary: '控制是否启用选股页；实现参考 AlphaSift。',
     usage: '默认关闭。设为 true 后显示选股入口并启用选股策略。',
@@ -727,6 +727,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     valueNotes: ['协议会影响模型名前缀归一、连接测试和模型发现方式。'],
     impact: ['影响请求适配器、模型列表解析和运行时模型引用。'],
     notes: ['协议与 Base URL、API Key 所属服务必须匹配。'],
+  },
+  'settings.llm_channel.api_surface': {
+    title: 'API Surface',
+    summary: '选择该渠道实际调用 Chat Completions 还是 Responses API。',
+    usage: '绝大多数兼容服务保持默认；仅在模型明确要求 Responses API 时选择 Responses。',
+    valueNotes: ['一个渠道内的模型共享同一 API Surface；同一模型别名跨渠道也不能混用两种 Surface，需要时请使用不同别名。'],
+    impact: ['影响连接测试、普通分析、Agent、流式输出和工具调用的实际端点。'],
+    notes: ['Responses 当前仅支持 OpenAI Compatible 协议，模型不能显式使用 anthropic/、gemini/、xai/ 等其他 LiteLLM provider 前缀；不会在失败后自动切换端点。'],
   },
   'settings.llm_channel.base_url': {
     title: 'Base URL',
@@ -1522,7 +1530,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects stock-name freshness for Web autocomplete and backend stock-name resolution.'],
     notes: ['When remote download fails, the app keeps using an existing cache or the bundled index.'],
   },
-  'settings.data_source.SCREENING_ENABLED': {
+  'settings.base.SCREENING_ENABLED': {
     title: 'Screening',
     summary: 'Controls the Screening page, implemented with reference to AlphaSift.',
     usage: 'Disabled by default. Set it to true to show Screening and enable screening strategies.',
@@ -1906,6 +1914,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Protocol affects model prefix normalization, connection tests, and discovery.'],
     impact: ['Affects request adapters, model parsing, and runtime model references.'],
     notes: ['Protocol, Base URL, and API Key must belong to the same service.'],
+  },
+  'settings.llm_channel.api_surface': {
+    title: 'API Surface',
+    summary: 'Selects whether the channel calls Chat Completions or the Responses API.',
+    usage: 'Keep the default for most compatible services. Select Responses only when the model requires it.',
+    valueNotes: ['All models in one channel share the same API surface. A route alias also cannot mix surfaces across channels; use distinct aliases when both are needed.'],
+    impact: ['Affects the actual endpoint used by connection tests, analysis, Agent, streaming, and tool calls.'],
+    notes: ['Responses currently requires the OpenAI Compatible protocol, and models cannot explicitly use other LiteLLM provider prefixes such as anthropic/, gemini/, or xai/. It never auto-switches after a failure.'],
   },
   'settings.llm_channel.base_url': {
     title: 'Base URL',
