@@ -12,10 +12,13 @@ Responsibilities:
 from __future__ import annotations
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
+from src.formatters import markdown_to_plain_text
+from src.data.stock_index_loader import resolve_index_stock_code
 from src.report_language import (
     get_bias_status_emoji,
     get_localized_stock_name,
@@ -37,12 +40,17 @@ from src.report_language import (
 )
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
+from src.services.empty_news import (
+    empty_news_disclosure,
+    empty_news_disclosure_from_stored,
+    persisted_news_evidence_present,
+    persisted_news_result_state,
+)
 from src.market_phase_summary import (
     extract_market_phase_summary,
     rebuild_market_phase_summary_for_stock_code,
 )
 from src.schemas.decision_action import (
-    build_action_fields,
     display_action_fields,
     display_action_fields_for_result,
     display_operation_advice_for_result,
@@ -132,6 +140,19 @@ class HistoryService:
             unpadded_digits = digits.lstrip("0")
             if unpadded_digits:
                 add(f"{unpadded_digits}.HK")
+
+        resolved = resolve_index_stock_code(raw_canonical) or resolve_index_stock_code(normalized)
+        resolved_normalized = ""
+        if resolved:
+            try:
+                resolved_normalized = canonical_stock_code(normalize_stock_code(resolved))
+            except Exception:
+                resolved_normalized = resolved
+            add(resolved)
+            add(resolved_normalized)
+            resolved_base = str(resolved_normalized or resolved).split(".", 1)[0]
+            if resolved_base and resolved_base.isdigit():
+                add(resolved_base)
 
         add(raw_canonical)
         add(normalized)
@@ -312,23 +333,34 @@ class HistoryService:
     def _record_to_list_item_dict(self, record) -> Dict[str, Any]:
         raw_result = parse_json_field(getattr(record, "raw_result", None))
         model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
+        display_code = self._display_stock_code(record.code)
         market_fields = self._extract_history_market_fields(
             getattr(record, "context_snapshot", None)
         )
-        market_phase_summary = extract_market_phase_summary(getattr(record, "context_snapshot", None))
+        market_phase_summary = self._display_market_phase_summary(
+            record.code,
+            getattr(record, "context_snapshot", None),
+        )
         action_fields = self._decision_action_fields_for_record(record, raw_result)
+        analysis_summary = record.analysis_summary
+        if getattr(record, "report_type", None) == "market_review":
+            market_review_content = self._extract_market_review_content(record, raw_result)
+            analysis_summary = self._market_review_summary(
+                record.analysis_summary,
+                market_review_content,
+            )
 
         return {
             "id": record.id,
             "query_id": record.query_id,
-            "stock_code": record.code,
+            "stock_code": display_code,
             "stock_name": record.name,
             "report_type": record.report_type,
             "region": self._extract_market_review_region(
                 getattr(record, "context_snapshot", None)
             ),
             "trend_prediction": record.trend_prediction,
-            "analysis_summary": record.analysis_summary,
+            "analysis_summary": analysis_summary,
             "sentiment_score": record.sentiment_score,
             "operation_advice": record.operation_advice,
             "action": action_fields["action"],
@@ -394,168 +426,23 @@ class HistoryService:
             logger.error(f"resolve_and_get_detail failed for {record_id}: {e}", exc_info=True)
             return None
 
-    # MCP 新闻 source/type fallback 映射
-    _MCP_SOURCE_FALLBACK = {
-        "NOTICE": "公司公告",
-        "INV_NEWS": "投资资讯",
-        "NEWS": "财经新闻",
-    }
-
-    def _extract_mcp_news_items(self, record) -> List[Dict[str, str]]:
-        """
-        从历史记录的 raw_result JSON 里抽取 mcp_news_items。
-        统一字段映射 + source 兜底 + (title+source+date) 去重。
-        """
-        raw = getattr(record, "raw_result", None)
-        if not raw:
-            return []
-
-        # raw_result 可能是 str/bytes/dict
-        if isinstance(raw, (str, bytes)):
-            try:
-                raw = json.loads(raw)
-            except (ValueError, TypeError):
-                logger.debug("resolve_and_get_news: raw_result is not valid JSON")
-                return []
-
-        if not isinstance(raw, dict):
-            return []
-
-        mcp_items = raw.get("mcp_news_items")
-        if not isinstance(mcp_items, list):
-            return []
-
-        mapped: List[Dict[str, str]] = []
-        seen_keys = {}  # (title, source, date) -> idx
-
-        for it in mcp_items:
-            if not isinstance(it, dict):
-                continue
-
-            title = str(it.get("title", "")).strip()
-            if not title:
-                continue
-
-            content = str(it.get("content", "")).strip()
-            url = str(it.get("url", "")).strip()
-            date = str(it.get("date", "")).strip()
-            raw_source = str(it.get("source", "")).strip()
-            item_type = str(it.get("type", "")).strip()
-
-            # source fallback
-            if raw_source:
-                source = raw_source
-            elif item_type in self._MCP_SOURCE_FALLBACK:
-                source = self._MCP_SOURCE_FALLBACK[item_type]
-            else:
-                source = item_type or "财经新闻"
-
-            # snippet: 取 content 前 260 字
-            snippet = content[:260].strip()
-
-            # 去重 key: (title, source, date)
-            dedup_key = (title, source, date)
-            existing_idx = seen_keys.get(dedup_key)
-
-            if existing_idx is not None:
-                # 保留 content 最长的一条
-                existing_content = mapped[existing_idx].get("_raw_content", "")
-                if len(content) > len(existing_content):
-                    mapped[existing_idx] = {
-                        "title": title,
-                        "snippet": snippet,
-                        "url": url,
-                        "source": source,
-                        "published_date": date,
-                        "type": item_type,
-                        "provider": "eastmoney_mcp",
-                        "_raw_content": content,
-                    }
-            else:
-                seen_keys[dedup_key] = len(mapped)
-                mapped.append({
-                    "title": title,
-                    "snippet": snippet,
-                    "url": url,
-                    "source": source,
-                    "published_date": date,
-                    "type": item_type,
-                    "provider": "eastmoney_mcp",
-                    "_raw_content": content,
-                })
-
-        # 去掉内部辅助字段
-        result = []
-        for m in mapped:
-            result.append({k: v for k, v in m.items() if not k.startswith("_")})
-        return result
-
-    def _merge_news(self, tavily_items: List[Dict[str, str]], mcp_items: List[Dict[str, str]], limit: int) -> List[Dict[str, str]]:
-        """
-        合并 Tavily + MCP 新闻，按 url 去重（优先 Tavily，因 snippet 更长）。
-        """
-        merged: List[Dict[str, str]] = []
-        seen_urls = set()
-
-        # 先放 Tavily（优先级更高）
-        for it in tavily_items:
-            url = (it.get("url") or "").strip()
-            if url and url in seen_urls:
-                continue
-            if url:
-                seen_urls.add(url)
-            merged.append({
-                "title": it.get("title", ""),
-                "snippet": it.get("snippet", ""),
-                "url": url,
-                "source": it.get("source", ""),
-                "published_date": it.get("published_date", "") or it.get("published_at", ""),
-                "type": "",
-                "provider": "tavily",
-            })
-
-        # 再放 MCP（按 url 去重）
-        for it in mcp_items:
-            url = (it.get("url") or "").strip()
-            if url and url in seen_urls:
-                continue
-            if url:
-                seen_urls.add(url)
-            merged.append(it)
-
-        return merged[:limit]
-
     def resolve_and_get_news(self, record_id: str, limit: int = 20) -> List[Dict[str, str]]:
         """
         Resolve record_id (int PK or query_id string) and return associated news.
-
-        Merges two sources:
-          1. Tavily news (from news_intel table) — via get_news_intel()
-          2. MCP news (from record.raw_result.mcp_news_items) — via _extract_mcp_news_items()
-
-        Dedup is by URL; Tavily takes priority.
 
         Args:
             record_id: integer PK (as string) or query_id string
             limit: max items to return
 
         Returns:
-            List of news intel dicts (unified schema)
+            List of news intel dicts
         """
         try:
             record = self._resolve_record(record_id)
             if not record:
                 logger.warning(f"resolve_and_get_news: record not found for {record_id}")
                 return []
-
-            # 1) Tavily 新闻
-            tavily_items = self.get_news_intel(query_id=record.query_id, limit=limit)
-
-            # 2) MCP 新闻（从 raw_result 抽取）
-            mcp_items = self._extract_mcp_news_items(record)
-
-            # 3) 合并去重
-            return self._merge_news(tavily_items, mcp_items, limit)
+            return self.get_news_intel(query_id=record.query_id, limit=limit)
         except Exception as e:
             logger.error(f"resolve_and_get_news failed for {record_id}: {e}", exc_info=True)
             return []
@@ -698,6 +585,39 @@ class HistoryService:
             return news_content
         return None
 
+    @staticmethod
+    def _market_review_summary(
+        persisted_summary: Any,
+        markdown: Any,
+        *,
+        limit: int = 120,
+    ) -> Optional[str]:
+        """Return a stable short summary without leaking report Markdown or metadata."""
+        persisted = str(persisted_summary or "").strip()
+        if persisted:
+            return persisted
+
+        source = str(markdown or "").strip()
+        if not source:
+            return None
+
+        # Full reports can contain internal reference metadata, tables, links and
+        # fenced diagnostic payloads. Keep readable prose only for summary fields.
+        source = re.sub(r"```[^\n]*\n.*?```", " ", source, flags=re.DOTALL)
+        source = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", source)
+        source = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", source)
+        source = re.sub(r"<[^>]+>", " ", source)
+        text = markdown_to_plain_text(source)
+        text = re.sub(r"[`~|]", " ", text)
+        text = re.sub(r"^\s*:?-{3,}:?(?:\s+:?-{3,}:?)+\s*$", " ", text, flags=re.MULTILINE)
+        text = re.sub(r"^[+\d]+[.)]\s+", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\s+", " ", text).strip(" •-—")
+        if not text:
+            return None
+        if len(text) > limit:
+            return text[:limit].rstrip() + "…"
+        return text
+
     def _record_to_detail_dict(self, record) -> Dict[str, Any]:
         """
         Convert an AnalysisHistory ORM record to a detail response dict.
@@ -715,20 +635,37 @@ class HistoryService:
             except json.JSONDecodeError:
                 context_snapshot = record.context_snapshot
 
+        report_language = normalize_report_language(
+            raw_result.get("report_language") if isinstance(raw_result, dict) else None
+        )
+        news_disclosure = empty_news_disclosure_from_stored(
+            raw_result,
+            context_snapshot,
+            report_language,
+        )
+
         market_review_content = None
+        analysis_summary = record.analysis_summary
         if getattr(record, "report_type", None) == "market_review":
             market_review_content = self._extract_market_review_content(record, raw_result)
+            analysis_summary = self._market_review_summary(
+                record.analysis_summary,
+                market_review_content,
+            )
 
         action_fields = self._decision_action_fields_for_record(record, raw_result)
+        display_code = self._display_stock_code(record.code)
+        market_phase_summary = self._display_market_phase_summary(record.code, context_snapshot)
         return {
             "id": record.id,
             "query_id": record.query_id,
-            "stock_code": record.code,
+            "stock_code": display_code,
+            "storage_stock_code": str(record.code or "").strip(),
             "stock_name": record.name,
             "report_type": record.report_type,
             "created_at": self._serialize_created_at(record.created_at),
             "model_used": model_used,
-            "analysis_summary": market_review_content or record.analysis_summary,
+            "analysis_summary": analysis_summary,
             "operation_advice": record.operation_advice,
             "action": action_fields["action"],
             "action_label": action_fields["action_label"],
@@ -740,8 +677,10 @@ class HistoryService:
             "stop_loss": sniper_points.get("stop_loss"),
             "take_profit": sniper_points.get("take_profit"),
             "news_content": market_review_content or record.news_content,
+            "empty_news_disclosure": news_disclosure,
             "raw_result": raw_result,
             "context_snapshot": context_snapshot,
+            "market_phase_summary": market_phase_summary,
         }
 
     def _decision_action_fields_for_record(self, record, raw_result: Any) -> Dict[str, Any]:
@@ -992,6 +931,11 @@ class HistoryService:
             from src.analyzer import AnalysisResult
             # Extract dashboard data if available
             dashboard = raw_result.get("dashboard", {})
+            context_snapshot = parse_json_field(getattr(record, "context_snapshot", None))
+            news_result_count, news_result_count_known = persisted_news_result_state(
+                raw_result,
+                context_snapshot,
+            )
 
             # Build AnalysisResult with available data
             result = AnalysisResult(
@@ -1025,6 +969,11 @@ class HistoryService:
                 buy_reason=raw_result.get("buy_reason", ""),
                 market_snapshot=raw_result.get("market_snapshot"),
                 search_performed=raw_result.get("search_performed", False),
+                news_result_count=news_result_count,
+                news_result_count_known=news_result_count_known,
+                news_evidence_present=persisted_news_evidence_present(
+                    raw_result, news_result_count
+                ),
                 data_sources=raw_result.get("data_sources", ""),
                 success=raw_result.get("success", True),
                 error_message=raw_result.get("error_message"),
@@ -1096,6 +1045,10 @@ class HistoryService:
             "---",
             "",
         ]
+
+        news_disclosure = empty_news_disclosure(result, report_language)
+        if news_disclosure:
+            report_lines.extend([news_disclosure, ""])
 
         # ========== 舆情与基本面概览（放在最前面）==========
         intel = dashboard.get('intelligence', {}) if dashboard else {}
